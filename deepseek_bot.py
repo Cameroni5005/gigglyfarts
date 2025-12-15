@@ -342,6 +342,21 @@ def run_bot():
 # start the bot in a background thread
 threading.Thread(target=run_bot, daemon=True).start()
 
+# --- keep awake thread (prevents free-tier sleep) ---
+def keep_awake():
+    import time
+    import requests
+    url = f"http://localhost:{os.environ.get('PORT', 10000)}/"
+    while True:
+        try:
+            requests.get(url)
+        except:
+            pass
+        time.sleep(10 * 60)  # ping every 10 minutes
+
+threading.Thread(target=keep_awake, daemon=True).start()
+
+# Flask app
 @app.route("/")
 def home():
     return "Gigglyfarts bot running"
@@ -349,3 +364,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
