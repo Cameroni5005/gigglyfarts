@@ -292,13 +292,9 @@ def wait_until_1250pm_pst():
             return
         time.sleep(30)
 
-def listen_for_manual():
-    global run_now
-    while True:
-        if input().lower()=="y":
-            run_now=True
+# on render, skip manual input
+run_now = False  # default behavior
 
-threading.Thread(target=listen_for_manual, daemon=True).start()
 
 def is_market_day():
     today = datetime.datetime.utcnow() + datetime.timedelta(hours=TIMEZONE_OFFSET)
@@ -337,5 +333,6 @@ while True:
             sym = parts[0].strip()
             sig = parts[1].split("(")[0].strip()
             place_order(sym, sig)
+
 
     time.sleep(86400)  # wait 24h
