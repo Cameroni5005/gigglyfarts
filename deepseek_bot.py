@@ -313,6 +313,7 @@ def run_bot():
     MARKET_CLOSE = datetime.time(13,0)
 
     run_today = set()  # track which of the two runs happened today
+    last_run_date = None 
 
     while True:
         now = datetime.datetime.now(datetime.timezone.utc).astimezone()
@@ -376,5 +377,6 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
