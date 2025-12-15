@@ -8,31 +8,25 @@ from flask import Flask
 import os
 
 # ---------------- CONFIG ----------------
+load_dotenv()
 
-# load keys from .env
-load_dotenv()  # reads .env in the same folder
-
-API_KEY = os.getenv("DEEPSEEK_KEY")     # deepseek
+API_KEY = os.getenv("DEEPSEEK_KEY")
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
 BASE_URL = "https://paper-api.alpaca.markets"
 
-# fail fast if any keys are missing
 if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET]):
     raise SystemExit("missing env vars for API keys")
 
-# Alpaca API init
 api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
 
-# tickers
 TICKERS = [
     "AAPL","MSFT","AMZN","NVDA","GOOG","META","TSLA","NFLX","DIS","PYPL",
     "INTC","CSCO","ADBE","ORCL","IBM","CRM","AMD","UBER","LYFT","SHOP",
     "BABA","NKE","SBUX","QCOM","PEP","KO"
 ]
 
-# sectors
 SECTORS = {
     "AAPL":"Technology","MSFT":"Technology","AMZN":"Consumer Discretionary","NVDA":"Technology",
     "GOOG":"Technology","META":"Communication Services","TSLA":"Consumer Discretionary",
@@ -47,35 +41,33 @@ TIMEZONE_OFFSET = -8  # PST
 
 # ---------- CACHE ----------
 CACHE = {
-    "news": {},       # key: (symbol, date), value: summary
-    "social": {}      # key: (symbol, date), value: sentiment string
+    "news": {},
+    "social": {}
 }
 
-# ---------------- HELPER FUNCTIONS ----------------
+# ---------------- HELPERS ----------------
 def safe_json(r):
     try:
         return r.json()
-    except:
+    except ValueError:
         return {}
 
 # ----- NEWS -----
 def fetch_finnhub_news(symbol):
     today = datetime.date.today()
-    # check cache first
-    cached = CACHE['news'].get((symbol, today))
-    if cached:
-        return cached
-    # fetch fresh
+    key = (symbol, today)
+    if key in CACHE['news']:
+        return CACHE['news'][key]
     yesterday = today - datetime.timedelta(days=3)
     try:
         r = requests.get(
             f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={yesterday}&to={today}&token={FINNHUB_KEY}",
             timeout=5
         )
-        news_data = safe_json(r)
-        headlines = [item['headline'] for item in news_data[:2]] if news_data else ["no major news"]
+        data = safe_json(r)
+        headlines = [item['headline'] for item in data[:2]] if data else ["no major news"]
         summary = " | ".join(headlines)
-        CACHE['news'][(symbol, today)] = summary
+        CACHE['news'][key] = summary
         return summary
     except:
         return "no major news"
@@ -88,46 +80,42 @@ def fetch_finnhub_analyst(symbol):
             timeout=5
         )
         data = safe_json(r)
-        if data and isinstance(data,list) and "rating" in data[0]:
-            return f"analyst avg {data[0]['rating']}"
+        rating = data[0].get("rating") if data and isinstance(data, list) else None
+        return f"analyst avg {rating}" if rating else ""
     except:
-        pass
-    return ""
+        return ""
 
 # ----- SOCIAL -----
 def fetch_finnhub_social(symbol):
     today = datetime.date.today()
-    cached = CACHE['social'].get((symbol, today))
-    if cached:
-        return cached
+    key = (symbol, today)
+    if key in CACHE['social']:
+        return CACHE['social'][key]
     yesterday = today - datetime.timedelta(days=1)
     try:
         r = requests.get(
             f"https://finnhub.io/api/v1/stock/social-sentiment?symbol={symbol}&from={yesterday}&token={FINNHUB_KEY}",
             timeout=5
         )
-        social = safe_json(r)
-        sentiment = ""
-        if social.get("reddit") and social["reddit"][0]["mention"] > 5:
-            sentiment = "bullish"
-        CACHE['social'][(symbol, today)] = sentiment
+        data = safe_json(r)
+        sentiment = "bullish" if data.get("reddit") and data["reddit"][0]["mention"] > 5 else ""
+        CACHE['social'][key] = sentiment
         return sentiment
     except:
         return ""
 
-# ----- FINNHUB PRICE DATA (intraday) -----
+# ----- PRICE DATA -----
 def fetch_finnhub_bars(symbol, resolution="60", count=150):
     now = int(time.time())
     start = now - (count * int(resolution) * 60)
-    url = (
-        f"https://finnhub.io/api/v1/stock/candle?"
-        f"symbol={symbol}&resolution={resolution}&from={start}&to={now}&token={FINNHUB_KEY}"
-    )
     try:
-        r = requests.get(url, timeout=5)
-        j = safe_json(r)
-        if j.get("s") == "ok":
-            return j
+        r = requests.get(
+            f"https://finnhub.io/api/v1/stock/candle?symbol={symbol}&resolution={resolution}&from={start}&to={now}&token={FINNHUB_KEY}",
+            timeout=5
+        )
+        data = safe_json(r)
+        if data.get("s") == "ok":
+            return data
     except:
         pass
     return {}
@@ -136,11 +124,7 @@ def get_intraday_data(symbol):
     bars = fetch_finnhub_bars(symbol, resolution="1", count=200)
     if not bars or "c" not in bars:
         return []
-
-    out = []
-    for t, c, v in zip(bars["t"], bars["c"], bars["v"]):
-        out.append({"time": t, "close": c, "volume": v})
-    return out
+    return [{"time": t, "close": c, "volume": v} for t, c, v in zip(bars["t"], bars["c"], bars["v"])]
 
 def compute_technical(symbol):
     data = get_intraday_data(symbol)
@@ -153,46 +137,27 @@ def compute_technical(symbol):
     ma5 = round(sum(closes[-5:])/5, 2) if len(closes) >= 5 else None
     ma20 = round(sum(closes[-20:])/20, 2) if len(closes) >= 20 else None
 
-    # rsi proper
+    rsi = None
     rsi_period = 14
     if len(closes) > rsi_period:
         deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
         gains = [d if d > 0 else 0 for d in deltas]
         losses = [-d if d < 0 else 0 for d in deltas]
-
         avg_gain = sum(gains[:rsi_period])/rsi_period
         avg_loss = sum(losses[:rsi_period])/rsi_period
-
         for g, l in zip(gains[rsi_period:], losses[rsi_period:]):
-            avg_gain = (avg_gain * (rsi_period - 1) + g) / rsi_period
-            avg_loss = (avg_loss * (rsi_period - 1) + l) / rsi_period
-
-        if avg_loss == 0:
-            rsi = 100.0
-        elif avg_gain == 0:
-            rsi = 0.0
-        else:
-            rs = avg_gain / avg_loss
-            rsi = round(100 - (100/(1+rs)), 2)
-    else:
-        rsi = None
+            avg_gain = (avg_gain*(rsi_period-1) + g)/rsi_period
+            avg_loss = (avg_loss*(rsi_period-1) + l)/rsi_period
+        rsi = 100.0 if avg_loss == 0 else 0.0 if avg_gain == 0 else round(100-(100/(1+avg_gain/avg_loss)), 2)
 
     last = closes[-1]
     prev = closes[-2] if len(closes) > 1 else last
     delta = round(last - prev, 2)
-
     avg_vol30 = sum(volumes[-30:])/30 if len(volumes) >= 30 else volumes[-1]
     vol_change = round((volumes[-1]-avg_vol30)/avg_vol30*100, 1)
 
-    return {
-        "price": round(last, 2),
-        "change": delta,
-        "ma5": ma5,
-        "ma20": ma20,
-        "rsi": rsi,
-        "volume": volumes[-1],
-        "vol_change": vol_change
-    }
+    return {"price": round(last,2), "change": delta, "ma5": ma5, "ma20": ma20, "rsi": rsi,
+            "volume": volumes[-1], "vol_change": vol_change}
 
 # ----- STOCK SUMMARY -----
 def get_stock_summary(tickers):
@@ -201,11 +166,6 @@ def get_stock_summary(tickers):
         tech = compute_technical(t)
         if not tech:
             continue
-
-        news = fetch_finnhub_news(t)
-        analyst = fetch_finnhub_analyst(t)
-        social = fetch_finnhub_social(t)
-
         summaries.append({
             "symbol": t,
             "price": tech["price"],
@@ -215,10 +175,10 @@ def get_stock_summary(tickers):
             "ma20": tech["ma20"],
             "rsi": tech["rsi"],
             "vol_change": tech["vol_change"],
-            "sector": SECTORS.get(t,""),
-            "news": news,
-            "analyst": analyst,
-            "social": social
+            "sector": SECTORS.get(t, ""),
+            "news": fetch_finnhub_news(t),
+            "analyst": fetch_finnhub_analyst(t),
+            "social": fetch_finnhub_social(t)
         })
         time.sleep(0.05)
     return summaries
@@ -227,38 +187,26 @@ def get_stock_summary(tickers):
 def build_prompt(summaries):
     prompt = (
         "You are a short-term stock trading AI. Calculate a numeric score 0-100 for each stock using these weights:\n"
-        "- News/catalysts: 40%\n"
-        "- Technical indicators (RSI, MA, volume): 35%\n"
-        "- Social sentiment: 15%\n"
-        "- Sector/macro context: 7%\n"
-        "- Fundamentals: 3%\n\n"
+        "- News/catalysts: 40%\n- Technical indicators (RSI, MA, volume): 35%\n"
+        "- Social sentiment: 15%\n- Sector/macro context: 7%\n- Fundamentals: 3%\n\n"
         "Score based on last 3 months of price data, recent news (last 3 days), social sentiment, and sector/macro trends.\n"
         "Use the score to assign recommendation:\n"
-        "80-100 → STRONG BUY\n"
-        "65-79 → BUY\n"
-        "45-64 → HOLD\n"
-        "30-44 → SELL\n"
-        "0-29 → STRONG SELL\n\n"
+        "80-100 → STRONG BUY\n65-79 → BUY\n45-64 → HOLD\n30-44 → SELL\n0-29 → STRONG SELL\n\n"
         "Output format: SYMBOL: RECOMMENDATION (1-2 word note if relevant). Do NOT include numeric scores in the output.\n\n"
     )
-
-    for s in summaries:
-        news_str = s['news'] if isinstance(s['news'], str) else "no major news"
-        prompt += (
-            f"{s['symbol']}: price {s['price']}, change {s['change']}, MA5 {s['ma5']}, MA20 {s['ma20']}, RSI {s['rsi']}, "
-            f"volume {s['volume']} (Δ{s['vol_change']}%), sector {s['sector']}, analyst {s['analyst']}, social {s['social']}, "
-            f"news: {news_str}\n"
-        )
+    prompt += "\n".join(
+        f"{s['symbol']}: price {s['price']}, change {s['change']}, MA5 {s['ma5']}, MA20 {s['ma20']}, "
+        f"RSI {s['rsi']}, volume {s['volume']} (Δ{s['vol_change']}%), sector {s['sector']}, "
+        f"analyst {s['analyst']}, social {s['social']}, news: {s['news'] if isinstance(s['news'], str) else 'no major news'}"
+        for s in summaries
+    )
     return prompt
 
 # ----- DEEPSEEK -----
 def ask_deepseek(prompt):
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "deepseek-chat",
-               "messages":[{"role":"user","content":prompt}],
-               "temperature":0.2,
-               "max_tokens":500}
+    payload = {"model":"deepseek-chat","messages":[{"role":"user","content":prompt}],"temperature":0.2,"max_tokens":500}
     r = requests.post(url, headers=headers, json=payload)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
@@ -267,8 +215,8 @@ def ask_deepseek(prompt):
 def place_order(symbol, signal):
     account = api.get_account()
     buying_power = float(account.cash)
-    position_size = 0
     signal = signal.upper()
+    position_size = 0
 
     if signal == "STRONG BUY":
         position_size = buying_power * 0.1
@@ -276,16 +224,10 @@ def place_order(symbol, signal):
         position_size = buying_power * 0.05
     elif signal in ["SELL","STRONG SELL"]:
         try:
-            current_qty = int(api.get_position(symbol).qty)
-            if current_qty > 0:
-                api.submit_order(
-                    symbol=symbol,
-                    qty=current_qty,
-                    side='sell',
-                    type='market',
-                    time_in_force='day'
-                )
-                print(f"Sold {current_qty} shares of {symbol}")
+            qty = int(api.get_position(symbol).qty)
+            if qty > 0:
+                api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
+                print(f"Sold {qty} shares of {symbol}")
         except:
             print(f"No position to sell for {symbol}")
         return
@@ -299,59 +241,40 @@ def place_order(symbol, signal):
         print(f"Not enough cash to buy {symbol}")
         return
     try:
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side='buy',
-            type='market',
-            time_in_force='day'
-        )
+        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
         print(f"Bought {qty} shares of {symbol} at ~{price}")
     except Exception as e:
         print(f"Error buying {symbol}: {e}")
 
-# ----- MARKET TIME CONTROL -----
+# ----- BOT LOOP -----
 def run_bot():
     MARKET_OPEN = datetime.time(6,30)
     MARKET_CLOSE = datetime.time(13,0)
-
-    run_today = set()  # track which of the two runs happened today
-    last_run_date = None 
+    run_today = set()
+    last_run_date = None
 
     while True:
         now = datetime.datetime.now(datetime.timezone.utc).astimezone()
-        if now.weekday() >= 5:  # skip weekends
+        if now.date() != last_run_date:
             run_today.clear()
+            last_run_date = now.date()
+
+        if now.weekday() >= 5:
             time.sleep(3600)
             continue
-
-        # clear cache for old entries
-        for key in list(CACHE['news'].keys()):
-            if key[1] != now.date():
-                del CACHE['news'][key]
-        for key in list(CACHE['social'].keys()):
-            if key[1] != now.date():
-                del CACHE['social'][key]
 
         open_run_time = (datetime.datetime.combine(now, MARKET_OPEN)+datetime.timedelta(minutes=20)).time()
         close_run_time = (datetime.datetime.combine(now, MARKET_CLOSE)-datetime.timedelta(minutes=10)).time()
 
-        # 20 min after open
         if "open" not in run_today and now.time() >= open_run_time:
             run_today.add("open")
             execute_trading_logic()
 
-        # 10 min before close
         if "close" not in run_today and now.time() >= close_run_time:
             run_today.add("close")
             execute_trading_logic()
 
-        # reset run_today at midnight
-        if last_run_date != now.date():
-            run_today.clear()
-            last_run_date = now.date()
-
-        time.sleep(30)  # check every 30 sec
+        time.sleep(30)
 
 def execute_trading_logic():
     summaries = get_stock_summary(TICKERS)
@@ -374,7 +297,6 @@ def execute_trading_logic():
             sym = parts[0].strip()
             sig = parts[1].split("(")[0].strip()
             place_order(sym, sig)
-
 
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
