@@ -198,11 +198,11 @@ def get_stock_summary(tickers):
 def build_prompt(summaries):
     prompt = (
         "You are a short-term stock trading AI. Calculate a numeric score 0-100 for each stock using these weights:\n"
-        "- News/catalysts: 45%\n"
-        "- Technical indicators (RSI, MA, volume): 25%\n"
-        "- Social sentiment: 10%\n"
-        "- Sector/macro context: 10%\n"
-        "- Fundamentals: 10%\n\n"
+        "- News/catalysts: 40%\n"
+        "- Technical indicators (RSI, MA, volume): 35%\n"
+        "- Social sentiment: 15%\n"
+        "- Sector/macro context: 7%\n"
+        "- Fundamentals: 3%\n\n"
         "Score based on last 3 months of price data, recent news (last 3 days), social sentiment, and sector/macro trends.\n"
         "Use the score to assign recommendation:\n"
         "80-100 → STRONG BUY\n"
@@ -374,5 +374,6 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
