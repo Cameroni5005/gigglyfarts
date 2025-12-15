@@ -47,9 +47,8 @@ TIMEZONE_OFFSET = -8  # PST
 
 # ---------- CACHE ----------
 CACHE = {
-    "news": {},       # key: (symbol, date), value: [headlines]
-    "social": {},     # key: (symbol, date), value: sentiment string
-    "macro": {}       # key: date, value: (sp500, vix, crude)
+    "news": {},       # key: (symbol, date), value: summary
+    "social": {}      # key: (symbol, date), value: sentiment string
 }
 
 # ---------------- HELPER FUNCTIONS ----------------
@@ -62,8 +61,11 @@ def safe_json(r):
 # ----- NEWS -----
 def fetch_finnhub_news(symbol):
     today = datetime.date.today()
-    if (symbol, today) in CACHE['news']:
-        return CACHE['news'][(symbol, today)]
+    # check cache first
+    cached = CACHE['news'].get((symbol, today))
+    if cached:
+        return cached
+    # fetch fresh
     yesterday = today - datetime.timedelta(days=3)
     try:
         r = requests.get(
@@ -95,8 +97,9 @@ def fetch_finnhub_analyst(symbol):
 # ----- SOCIAL -----
 def fetch_finnhub_social(symbol):
     today = datetime.date.today()
-    if (symbol, today) in CACHE['social']:
-        return CACHE['social'][(symbol, today)]
+    cached = CACHE['social'].get((symbol, today))
+    if cached:
+        return cached
     yesterday = today - datetime.timedelta(days=1)
     try:
         r = requests.get(
@@ -322,6 +325,14 @@ def run_bot():
             time.sleep(3600)
             continue
 
+        # clear cache for old entries
+        for key in list(CACHE['news'].keys()):
+            if key[1] != now.date():
+                del CACHE['news'][key]
+        for key in list(CACHE['social'].keys()):
+            if key[1] != now.date():
+                del CACHE['social'][key]
+
         open_run_time = (datetime.datetime.combine(now, MARKET_OPEN)+datetime.timedelta(minutes=20)).time()
         close_run_time = (datetime.datetime.combine(now, MARKET_CLOSE)-datetime.timedelta(minutes=10)).time()
 
@@ -335,9 +346,10 @@ def run_bot():
             run_today.add("close")
             execute_trading_logic()
 
-      if now.date() != last_run_date:
-    run_today.clear()
-    last_run_date = now.date()
+        # reset run_today at midnight
+        if last_run_date != now.date():
+            run_today.clear()
+            last_run_date = now.date()
 
         time.sleep(30)  # check every 30 sec
 
@@ -377,6 +389,3 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
