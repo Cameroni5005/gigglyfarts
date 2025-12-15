@@ -309,8 +309,8 @@ def place_order(symbol, signal):
 
 # ----- MARKET TIME CONTROL -----
 def run_bot():
-   MARKET_OPEN = datetime.time(6,30)
-MARKET_CLOSE = datetime.time(13,0)
+    MARKET_OPEN = datetime.time(6,30)
+    MARKET_CLOSE = datetime.time(13,0)
 
     run_today = set()  # track which of the two runs happened today
 
@@ -376,4 +376,5 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
