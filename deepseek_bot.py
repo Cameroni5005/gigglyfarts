@@ -1,4 +1,3 @@
-import yfinance as yf
 import requests
 import datetime
 import time
@@ -25,7 +24,6 @@ if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET]):
 
 # Alpaca API init
 api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
-run_now = False
 
 # tickers
 TICKERS = [
@@ -49,7 +47,6 @@ TIMEZONE_OFFSET = -8  # PST
 
 # ---------- CACHE ----------
 CACHE = {
-    "price": {},      # key: symbol, value: (date, dataframe)
     "news": {},       # key: (symbol, date), value: [headlines]
     "social": {},     # key: (symbol, date), value: sentiment string
     "macro": {}       # key: date, value: (sp500, vix, crude)
@@ -74,7 +71,6 @@ def fetch_finnhub_news(symbol):
             timeout=5
         )
         news_data = safe_json(r)
-        # take 2 headlines max
         headlines = [item['headline'] for item in news_data[:2]] if news_data else ["no major news"]
         summary = " | ".join(headlines)
         CACHE['news'][(symbol, today)] = summary
@@ -116,62 +112,92 @@ def fetch_finnhub_social(symbol):
     except:
         return ""
 
-# ----- PRICE DATA -----
-def get_price_data(symbol):
-    today = datetime.date.today()
-    if symbol in CACHE['price'] and CACHE['price'][symbol][0] == today:
-        return CACHE['price'][symbol][1]
-    data = yf.download(symbol, period="3mo", interval="1d", progress=False, auto_adjust=True)
-    CACHE['price'][symbol] = (today, data)
-    return data
-
-# ----- MACRO -----
-def get_macro_snippet():
-    today = datetime.date.today()
-    if today in CACHE['macro']:
-        sp500, vix, crude = CACHE['macro'][today]
-        return f"macro: S&P {sp500:.2f}, VIX {vix:.2f}, Crude {crude:.2f}"
+# ----- FINNHUB PRICE DATA (intraday) -----
+def fetch_finnhub_bars(symbol, resolution="60", count=150):
+    now = int(time.time())
+    start = now - (count * int(resolution) * 60)
+    url = (
+        f"https://finnhub.io/api/v1/stock/candle?"
+        f"symbol={symbol}&resolution={resolution}&from={start}&to={now}&token={FINNHUB_KEY}"
+    )
     try:
-        sp500 = yf.download("^GSPC", period="5d", interval="1d", progress=False)['Close'][-1]
-        vix = yf.download("^VIX", period="5d", interval="1d", progress=False)['Close'][-1]
-        crude = yf.download("CL=F", period="5d", interval="1d", progress=False)['Close'][-1]
-        CACHE['macro'][today] = (sp500, vix, crude)
-        return f"macro: S&P {sp500:.2f}, VIX {vix:.2f}, Crude {crude:.2f}"
+        r = requests.get(url, timeout=5)
+        j = safe_json(r)
+        if j.get("s") == "ok":
+            return j
     except:
-        return "macro data unavailable"
+        pass
+    return {}
+
+def get_intraday_data(symbol):
+    bars = fetch_finnhub_bars(symbol, resolution="1", count=200)
+    if not bars or "c" not in bars:
+        return []
+
+    out = []
+    for t, c, v in zip(bars["t"], bars["c"], bars["v"]):
+        out.append({"time": t, "close": c, "volume": v})
+    return out
+
+def compute_technical(symbol):
+    data = get_intraday_data(symbol)
+    if not data:
+        return None
+
+    closes = [d["close"] for d in data]
+    volumes = [d["volume"] for d in data]
+
+    ma5 = round(sum(closes[-5:])/5, 2) if len(closes) >= 5 else None
+    ma20 = round(sum(closes[-20:])/20, 2) if len(closes) >= 20 else None
+
+    # rsi proper
+    rsi_period = 14
+    if len(closes) > rsi_period:
+        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+
+        avg_gain = sum(gains[:rsi_period])/rsi_period
+        avg_loss = sum(losses[:rsi_period])/rsi_period
+
+        for g, l in zip(gains[rsi_period:], losses[rsi_period:]):
+            avg_gain = (avg_gain * (rsi_period - 1) + g) / rsi_period
+            avg_loss = (avg_loss * (rsi_period - 1) + l) / rsi_period
+
+        if avg_loss == 0:
+            rsi = 100.0
+        elif avg_gain == 0:
+            rsi = 0.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi = round(100 - (100/(1+rs)), 2)
+    else:
+        rsi = None
+
+    last = closes[-1]
+    prev = closes[-2] if len(closes) > 1 else last
+    delta = round(last - prev, 2)
+
+    avg_vol30 = sum(volumes[-30:])/30 if len(volumes) >= 30 else volumes[-1]
+    vol_change = round((volumes[-1]-avg_vol30)/avg_vol30*100, 1)
+
+    return {
+        "price": round(last, 2),
+        "change": delta,
+        "ma5": ma5,
+        "ma20": ma20,
+        "rsi": rsi,
+        "volume": volumes[-1],
+        "vol_change": vol_change
+    }
 
 # ----- STOCK SUMMARY -----
 def get_stock_summary(tickers):
     summaries = []
     for t in tickers:
-        data = get_price_data(t)
-        if len(data) < 2:
+        tech = compute_technical(t)
+        if not tech:
             continue
-        last = data.iloc[-1]
-        prev = data.iloc[-2]
-
-        ma5 = round(data['Close'][-5:].mean(),2) if len(data)>=5 else None
-        ma20 = round(data['Close'][-20:].mean(),2) if len(data)>=20 else None
-        delta = last['Close'] - prev['Close']
-
-        # RSI
-        delta_diff = data['Close'].diff()
-        gain = delta_diff.where(delta_diff>0,0)
-        loss = -delta_diff.where(delta_diff<0,0)
-        gain14 = gain[-14:]
-        loss14 = loss[-14:]
-        avg_gain = float(gain14.mean()) if not gain14.empty else 0.0
-        avg_loss = float(loss14.mean()) if not loss14.empty else 0.0
-        if avg_loss == 0 and avg_gain == 0:
-            rsi = 50.0
-        elif avg_loss == 0:
-            rsi = 100.0
-        else:
-            rsi = 100 - (100/(1+(avg_gain/avg_loss)))
-        rsi = round(rsi,2)
-
-        vol30 = float(data['Volume'][-30:].mean()) if len(data)>=30 else float(last['Volume'])
-        vol_change = round((last['Volume']-vol30)/vol30*100,1)
 
         news = fetch_finnhub_news(t)
         analyst = fetch_finnhub_analyst(t)
@@ -179,19 +205,19 @@ def get_stock_summary(tickers):
 
         summaries.append({
             "symbol": t,
-            "price": round(last['Close'],2),
-            "change": round(delta,2),
-            "volume": int(last['Volume']),
-            "ma5": ma5,
-            "ma20": ma20,
-            "rsi": rsi,
-            "vol_change": vol_change,
+            "price": tech["price"],
+            "change": tech["change"],
+            "volume": tech["volume"],
+            "ma5": tech["ma5"],
+            "ma20": tech["ma20"],
+            "rsi": tech["rsi"],
+            "vol_change": tech["vol_change"],
             "sector": SECTORS.get(t,""),
             "news": news,
             "analyst": analyst,
             "social": social
         })
-        time.sleep(0.05)  # small delay to not spam API
+        time.sleep(0.05)
     return summaries
 
 # ----- PROMPT -----
@@ -263,8 +289,9 @@ def place_order(symbol, signal):
     else:
         return
 
-    price = float(yf.Ticker(symbol).history(period="1d")['Close'][-1])
-    qty = int(position_size // price)
+    intraday = get_intraday_data(symbol)
+    price = intraday[-1]["close"] if intraday else 0
+    qty = int(position_size // price) if price > 0 else 0
     if qty < 1:
         print(f"Not enough cash to buy {symbol}")
         return
@@ -280,93 +307,67 @@ def place_order(symbol, signal):
     except Exception as e:
         print(f"Error buying {symbol}: {e}")
 
-# ----- TIME CONTROL -----
-def wait_until_1250pm_pst():
-    global run_now
-    while True:
-        if run_now:
-            run_now = False
-            return
-        now_utc = datetime.datetime.utcnow()
-        now_pst = now_utc + datetime.timedelta(hours=TIMEZONE_OFFSET)
-        if now_pst.hour == 12 and now_pst.minute == 50:
-            return
-        time.sleep(30)
-
-# on render, skip manual input
-run_now = False  # default behavior
-
-
-def is_market_day():
-    today = datetime.datetime.utcnow() + datetime.timedelta(hours=TIMEZONE_OFFSET)
-    return today.weekday() < 5  # 0-4 are Mon-Fri
-
-app = Flask(__name__)
-
+# ----- MARKET TIME CONTROL -----
 def run_bot():
+    MARKET_OPEN = datetime.time(10,0)
+    MARKET_CLOSE = datetime.time(15,55)
+    run_today = set()  # track which of the two runs happened today
+
     while True:
-        if not is_market_day():
-            print("Weekend detected, skipping today...")
-            time.sleep(86400)  # wait a full day
+        now = datetime.datetime.utcnow() + datetime.timedelta(hours=TIMEZONE_OFFSET)
+        if now.weekday() >= 5:  # skip weekends
+            run_today.clear()
+            time.sleep(3600)
             continue
 
-        print("waiting for 12:50 pm PST to run now...")
-        wait_until_1250pm_pst()
+        open_run_time = (datetime.datetime.combine(now, MARKET_OPEN)+datetime.timedelta(minutes=20)).time()
+        close_run_time = (datetime.datetime.combine(now, MARKET_CLOSE)-datetime.timedelta(minutes=10)).time()
 
-        summaries = get_stock_summary(TICKERS)
-        if not summaries:
-            print("no stock data, retrying in 5 minutes")
-            time.sleep(300)
-            continue
+        # 20 min after open
+        if "open" not in run_today and now.time() >= open_run_time:
+            run_today.add("open")
+            execute_trading_logic()
 
-        prompt = build_prompt(summaries)
-        try:
-            signals = ask_deepseek(prompt)
-            print("\nDAILY SHORT-TERM STOCK SIGNALS:")
-            print(signals)
-        except Exception as e:
-            print("error talking to Deepseek:", e)
-            time.sleep(300)
-            continue
+        # 10 min before close
+        if "close" not in run_today and now.time() >= close_run_time:
+            run_today.add("close")
+            execute_trading_logic()
 
-        # execute trades
-        for line in signals.splitlines():
-            parts = line.split(":")
-            if len(parts) >= 2:
-                sym = parts[0].strip()
-                sig = parts[1].split("(")[0].strip()
-                place_order(sym, sig)
+        # reset run_today at midnight
+        if now.time() >= datetime.time(23,59):
+            run_today.clear()
 
-        time.sleep(86400)  # wait 24h
+        time.sleep(30)  # check every 30 sec
 
-# start the bot in a background thread
+def execute_trading_logic():
+    summaries = get_stock_summary(TICKERS)
+    if not summaries:
+        print("no stock data, skipping")
+        return
+
+    prompt = build_prompt(summaries)
+    try:
+        signals = ask_deepseek(prompt)
+        print("\nDAILY SHORT-TERM STOCK SIGNALS:")
+        print(signals)
+    except Exception as e:
+        print("error talking to Deepseek:", e)
+        return
+
+    for line in signals.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 2:
+            sym = parts[0].strip()
+            sig = parts[1].split("(")[0].strip()
+            place_order(sym, sig)
+
+
+# start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
 
-# --- keep awake thread (prevents free-tier sleep) ---
-def keep_awake():
-    import time
-    import requests
-    url = f"http://localhost:{os.environ.get('PORT', 10000)}/"
-    while True:
-        try:
-            requests.get(url)
-        except:
-            pass
-        time.sleep(10 * 60)  # ping every 10 minutes
-
-def heartbeat():
-    while True:
-        try:
-            yf.download("AAPL", period="1d", interval="1d", progress=False)
-            print("heartbeat ok")
-        except Exception as e:
-            print("heartbeat failed", e)
-        time.sleep(300)  # every 5 minutes
-
-threading.Thread(target=heartbeat, daemon=True).start()
-
-
 # Flask app
+app = Flask(__name__)
+
 @app.route("/")
 def home():
     return "Gigglyfarts bot running"
@@ -374,6 +375,3 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
