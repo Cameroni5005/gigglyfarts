@@ -5,6 +5,7 @@ import time
 import threading
 from alpaca_trade_api.rest import REST
 from dotenv import load_dotenv
+from flask import Flask
 import os
 
 # ---------------- CONFIG ----------------
@@ -300,39 +301,51 @@ def is_market_day():
     today = datetime.datetime.utcnow() + datetime.timedelta(hours=TIMEZONE_OFFSET)
     return today.weekday() < 5  # 0-4 are Mon-Fri
 
-# ----- MAIN LOOP -----
-while True:
-    if not is_market_day():
-        print("Weekend detected, skipping today...")
-        time.sleep(86400)  # wait a full day
-        continue
+app = Flask(__name__)
 
-    print("waiting for 12:50 pm PST or press 'y' + enter to run now...")
-    wait_until_1250pm_pst()
+def run_bot():
+    while True:
+        if not is_market_day():
+            print("Weekend detected, skipping today...")
+            time.sleep(86400)  # wait a full day
+            continue
 
-    summaries = get_stock_summary(TICKERS)
-    if not summaries:
-        print("no stock data, retrying in 5 minutes")
-        time.sleep(300)
-        continue
+        print("waiting for 12:50 pm PST to run now...")
+        wait_until_1250pm_pst()
 
-    prompt = build_prompt(summaries)
-    try:
-        signals = ask_deepseek(prompt)
-        print("\nDAILY SHORT-TERM STOCK SIGNALS:")
-        print(signals)
-    except Exception as e:
-        print("error talking to Deepseek:", e)
-        time.sleep(300)
-        continue
+        summaries = get_stock_summary(TICKERS)
+        if not summaries:
+            print("no stock data, retrying in 5 minutes")
+            time.sleep(300)
+            continue
 
-    # execute trades
-    for line in signals.splitlines():
-        parts = line.split(":")
-        if len(parts) >= 2:
-            sym = parts[0].strip()
-            sig = parts[1].split("(")[0].strip()
-            place_order(sym, sig)
+        prompt = build_prompt(summaries)
+        try:
+            signals = ask_deepseek(prompt)
+            print("\nDAILY SHORT-TERM STOCK SIGNALS:")
+            print(signals)
+        except Exception as e:
+            print("error talking to Deepseek:", e)
+            time.sleep(300)
+            continue
 
+        # execute trades
+        for line in signals.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 2:
+                sym = parts[0].strip()
+                sig = parts[1].split("(")[0].strip()
+                place_order(sym, sig)
 
-    time.sleep(86400)  # wait 24h
+        time.sleep(86400)  # wait 24h
+
+# start the bot in a background thread
+threading.Thread(target=run_bot, daemon=True).start()
+
+@app.route("/")
+def home():
+    return "Gigglyfarts bot running"
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
