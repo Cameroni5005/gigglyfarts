@@ -309,12 +309,13 @@ def place_order(symbol, signal):
 
 # ----- MARKET TIME CONTROL -----
 def run_bot():
-    MARKET_OPEN = datetime.time(10,0)
-    MARKET_CLOSE = datetime.time(15,55)
+   MARKET_OPEN = datetime.time(6,30)
+MARKET_CLOSE = datetime.time(13,0)
+
     run_today = set()  # track which of the two runs happened today
 
     while True:
-        now = datetime.datetime.utcnow() + datetime.timedelta(hours=TIMEZONE_OFFSET)
+        now = datetime.datetime.now(datetime.timezone.utc).astimezone()
         if now.weekday() >= 5:  # skip weekends
             run_today.clear()
             time.sleep(3600)
@@ -333,9 +334,9 @@ def run_bot():
             run_today.add("close")
             execute_trading_logic()
 
-        # reset run_today at midnight
-        if now.time() >= datetime.time(23,59):
-            run_today.clear()
+      if now.date() != last_run_date:
+    run_today.clear()
+    last_run_date = now.date()
 
         time.sleep(30)  # check every 30 sec
 
@@ -375,3 +376,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
