@@ -354,7 +354,17 @@ def keep_awake():
             pass
         time.sleep(10 * 60)  # ping every 10 minutes
 
-threading.Thread(target=keep_awake, daemon=True).start()
+def heartbeat():
+    while True:
+        try:
+            yf.download("AAPL", period="1d", interval="1d", progress=False)
+            print("heartbeat ok")
+        except Exception as e:
+            print("heartbeat failed", e)
+        time.sleep(300)  # every 5 minutes
+
+threading.Thread(target=heartbeat, daemon=True).start()
+
 
 # Flask app
 @app.route("/")
@@ -364,4 +374,5 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
