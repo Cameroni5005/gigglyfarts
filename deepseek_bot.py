@@ -302,13 +302,12 @@ def execute_trading_logic():
             sig = parts[1].split("(")[0].strip()
             place_order(sym, sig)
             
-    def manual_trigger():
-        while True:
+   def manual_trigger():
+    while True:
         cmd = input().strip().lower()
         if cmd == "y":
             print("manual trigger activated")
             execute_trading_logic()
-
 
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
@@ -324,4 +323,5 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
