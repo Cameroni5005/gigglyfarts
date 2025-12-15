@@ -248,12 +248,14 @@ def place_order(symbol, signal):
 
 # ----- BOT LOOP -----
 def run_bot():
+    print("bot loop online")
     MARKET_OPEN = datetime.time(6,30)
     MARKET_CLOSE = datetime.time(13,0)
     run_today = set()
     last_run_date = None
 
     while True:
+        print("bot alive", now)
         now = datetime.datetime.now(datetime.timezone.utc).astimezone()
         if now.date() != last_run_date:
             run_today.clear()
@@ -267,10 +269,12 @@ def run_bot():
         close_run_time = (datetime.datetime.combine(now, MARKET_CLOSE)-datetime.timedelta(minutes=10)).time()
 
         if "open" not in run_today and now.time() >= open_run_time:
+            print("triggering trading logic (open)", now.time())
             run_today.add("open")
             execute_trading_logic()
 
         if "close" not in run_today and now.time() >= close_run_time:
+            print("triggering trading logic (close)", now.time())
             run_today.add("close")
             execute_trading_logic()
 
@@ -297,9 +301,18 @@ def execute_trading_logic():
             sym = parts[0].strip()
             sig = parts[1].split("(")[0].strip()
             place_order(sym, sig)
+            
+    def manual_trigger():
+        while True:
+        cmd = input().strip().lower()
+        if cmd == "y":
+            print("manual trigger activated")
+            execute_trading_logic()
+
 
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
+threading.Thread(target=manual_trigger, daemon=True).start()
 
 # Flask app
 app = Flask(__name__)
@@ -311,3 +324,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
