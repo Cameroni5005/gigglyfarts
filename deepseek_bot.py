@@ -114,8 +114,31 @@ TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
 # replace your multiple keys logic with just your single key
 TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
 
+import time, threading
+
+TWELVE_RATE_LIMIT = 8      # credits per minute
+TWELVE_WINDOW = 60         # seconds
+_twelve_calls = []
+_twelve_lock = threading.Lock()
+
+def twelve_rate_limit():
+    global _twelve_calls
+    with _twelve_lock:
+        now = time.time()
+        _twelve_calls = [t for t in _twelve_calls if now - t < TWELVE_WINDOW]
+
+        if len(_twelve_calls) >= TWELVE_RATE_LIMIT:
+            sleep_for = TWELVE_WINDOW - (now - _twelve_calls[0]) + 0.1
+            print(f"TwelveData rate limit hit, sleeping {sleep_for:.1f}s")
+            time.sleep(sleep_for)
+
+        _twelve_calls.append(time.time())
+
 def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
     try:
+        # 🔒 GLOBAL rate limiter (THIS is the fix)
+        twelve_rate_limit()
+
         r = requests.get(
             "https://api.twelvedata.com/time_series",
             params={
@@ -126,27 +149,33 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
             },
             timeout=8
         )
+
         data = safe_json(r)
         print(symbol, "bars raw:", data)
 
+        # 🚫 Rate limit or API error
+        if data.get("code") == 429:
+            print(symbol, "RATE LIMITED by TwelveData")
+            return []
+
+        # 🚫 Invalid / empty response
         if not data or "values" not in data:
             print(f"{symbol} no valid bars, returning empty list")
             return []
 
-        bars = []
-        for v in reversed(data["values"]):
-            bars.append({
-                "time": v["datetime"],
-                "close": float(v["close"]),
-                "volume": float(v["volume"])
-            })
+        # ✅ Parse bars
+        bars = [{
+            "time": v["datetime"],
+            "close": float(v["close"]),
+            "volume": float(v["volume"])
+        } for v in reversed(data["values"])]
 
-        time.sleep(8)  # wait 8 seconds before the next call
         return bars
+
     except Exception as e:
         print(symbol, "bars error:", e)
-        time.sleep(8)  # still wait before next attempt
         return []
+
 
 
 def get_intraday_data(symbol):
@@ -425,6 +454,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
