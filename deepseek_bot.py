@@ -111,6 +111,9 @@ def fetch_finnhub_social(symbol):
 # rotate through multiple 12Data keys per request
 TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
 
+# replace your multiple keys logic with just your single key
+TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
+
 def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
     try:
         r = requests.get(
@@ -119,34 +122,24 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
                 "symbol": symbol,
                 "interval": interval,
                 "outputsize": limit,
-                "apikey": TWELVEDATA_KEY  # single key from .env
+                "apikey": TWELVEDATA_KEY
             },
             timeout=8
         )
         data = safe_json(r)
-        print(symbol, "bars raw:", data)
-
         if not data or "values" not in data:
             print(f"{symbol} no valid bars, returning empty list")
             return []
-
-        bars = []
-        for v in reversed(data["values"]):
-            bars.append({
-                "time": v["datetime"],
-                "close": float(v["close"]),
-                "volume": float(v["volume"])
-            })
-
+        bars = [{"time": v["datetime"], "close": float(v["close"]), "volume": float(v["volume"])} for v in reversed(data["values"])]
         return bars
     except Exception as e:
         print(symbol, "bars error:", e)
         return []
 
+
 def get_intraday_data(symbol):
     bars = fetch_twelvedata_bars(symbol)
-    # always return list of dicts
-    if not bars:
+    if not isinstance(bars, list):
         return []
     return bars
 
@@ -242,22 +235,23 @@ def ask_deepseek(prompt):
 def place_order(symbol, signal):
     signal = signal.upper()
     max_retries = 3
-    retry_delay = 5  # seconds
-    position_size = 0
+    retry_delay = 5
 
-    # get account with retries
     for attempt in range(max_retries):
         try:
             account = api.get_account()
             buying_power = float(account.cash)
             break
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"get_account error, retrying in {retry_delay}s: {e}")
+            if attempt < max_retries-1:
                 time.sleep(retry_delay)
             else:
-                print(f"Failed to get account after {max_retries} attempts: {e}")
+                print(f"Failed to get account: {e}")
                 return
+
+    # rest of your logic (BUY/SELL) remains the same
+    # wrap api.submit_order in similar retry loop
+
 
     if signal == "STRONG BUY":
         position_size = buying_power * 0.1
@@ -395,10 +389,10 @@ def trigger():
                 print(f"{k}: MISSING")
                 missing = True
 
-        if missing:
-            print("cannot run trading logic, missing keys")
-        else:
-            execute_trading_logic()
+        if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
+    print("cannot run trading logic, missing keys")
+    return
+
     except Exception as e:
         print("error during manual trigger:", e)
     sys.stdout = old_stdout
@@ -411,6 +405,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
