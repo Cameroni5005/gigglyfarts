@@ -108,15 +108,23 @@ def fetch_finnhub_social(symbol):
         return ""
 
 # ----- PRICE DATA -----
+# rotate through multiple 12Data keys per request
+TWELVEDATA_KEYS = [os.getenv(f"TWELVEDATA_KEY_{i}") for i in range(1, 9)]
+key_counter = 0
+
 def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
+    global key_counter
     try:
+        key = TWELVEDATA_KEYS[key_counter % len(TWELVEDATA_KEYS)]
+        key_counter += 1
+
         r = requests.get(
             "https://api.twelvedata.com/time_series",
             params={
                 "symbol": symbol,
                 "interval": interval,
                 "outputsize": limit,
-                "apikey": TWELVEDATA_KEY
+                "apikey": key
             },
             timeout=8
         )
@@ -140,11 +148,16 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         return []
 
 
-def get_intraday_data(symbol):
-    return fetch_twelvedata_bars(symbol)
-    if not bars or "c" not in bars:
-        return []
-    return [{"time": t, "close": c, "volume": v} for t, c, v in zip(bars["t"], bars["c"], bars["v"])]
+def get_intraday_data(symbols):
+    all_data = {}
+    batch_size = 8  # 8 API calls per batch
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i+batch_size]
+        for s in batch:
+            all_data[s] = fetch_twelvedata_bars(s)
+        time.sleep(61)  # wait a bit over 1 minute before next batch
+    return all_data
+
 
 def compute_technical(symbol):
     data = get_intraday_data(symbol)
@@ -362,6 +375,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
