@@ -127,13 +127,25 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
             timeout=8
         )
         data = safe_json(r)
+        print(symbol, "bars raw:", data)
+
         if not data or "values" not in data:
             print(f"{symbol} no valid bars, returning empty list")
             return []
-        bars = [{"time": v["datetime"], "close": float(v["close"]), "volume": float(v["volume"])} for v in reversed(data["values"])]
+
+        bars = []
+        for v in reversed(data["values"]):
+            bars.append({
+                "time": v["datetime"],
+                "close": float(v["close"]),
+                "volume": float(v["volume"])
+            })
+
+        time.sleep(8)  # wait 8 seconds before the next call
         return bars
     except Exception as e:
         print(symbol, "bars error:", e)
+        time.sleep(8)  # still wait before next attempt
         return []
 
 
@@ -405,6 +417,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
