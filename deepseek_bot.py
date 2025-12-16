@@ -304,16 +304,24 @@ def execute_trading_logic():
             place_order(sym, sig)
 
 
-def manual_trigger():
-    while True:
-        cmd = input().strip().lower()
-        if cmd == "y":
-            print("manual trigger activated")
-            execute_trading_logic()
-            
+# ----- MANUAL TRIGGER VIA FLASK -----
+# no more input loop, use HTTP route instead
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Gigglyfarts bot running"
+
+@app.route("/trigger")
+def trigger():
+    print("manual trigger activated")
+    execute_trading_logic()
+    return "Trading logic executed"
+
+
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
-threading.Thread(target=manual_trigger, daemon=True).start()
+
 
 # Flask app
 app = Flask(__name__)
@@ -325,6 +333,7 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
