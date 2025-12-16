@@ -6,6 +6,8 @@ from alpaca_trade_api.rest import REST
 from dotenv import load_dotenv
 from flask import Flask
 import os
+from io import StringIO
+import sys
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -311,9 +313,15 @@ def home():
 
 @app.route("/trigger")
 def trigger():
-    print("manual trigger activated")
-    execute_trading_logic()
-    return "Trading logic executed"
+    old_stdout = sys.stdout
+    sys.stdout = mystdout = StringIO()
+    try:
+        print("manual trigger activated")
+        execute_trading_logic()
+    except Exception as e:
+        print("error during manual trigger:", e)
+    sys.stdout = old_stdout
+    return "<pre>" + mystdout.getvalue() + "</pre>"
 
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
