@@ -392,7 +392,13 @@ def trigger():
         print("manual trigger activated")
 
         # ---- check keys ----
-        keys = {"DEEPSEEK_KEY": API_KEY, "FINNHUB_KEY": FINNHUB_KEY, "ALPACA_KEY": ALPACA_KEY, "ALPACA_SECRET": ALPACA_SECRET}
+        keys = {
+            "DEEPSEEK_KEY": API_KEY,
+            "FINNHUB_KEY": FINNHUB_KEY,
+            "ALPACA_KEY": ALPACA_KEY,
+            "ALPACA_SECRET": ALPACA_SECRET,
+            "TWELVEDATA_KEY": TWELVEDATA_KEY
+        }
         missing = False
         for k, v in keys.items():
             if v:
@@ -401,15 +407,17 @@ def trigger():
                 print(f"{k}: MISSING")
                 missing = True
 
-        if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
-    print("cannot run trading logic, missing keys")
-    return
+        if missing:
+            print("cannot run trading logic, missing keys")
+        else:
+            execute_trading_logic()
 
     except Exception as e:
         print("error during manual trigger:", e)
-    sys.stdout = old_stdout
-    return "<pre>" + mystdout.getvalue() + "</pre>"
+    finally:
+        sys.stdout = old_stdout
 
+    return "<pre>" + mystdout.getvalue() + "</pre>"
 
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
