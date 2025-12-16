@@ -119,7 +119,7 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
                 "symbol": symbol,
                 "interval": interval,
                 "outputsize": limit,
-                "apikey": TWELVEDATA_KEY
+                "apikey": TWELVEDATA_KEY  # just your single key
             },
             timeout=8
         )
@@ -142,18 +142,17 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         print(symbol, "bars error:", e)
         return []
 
-def get_intraday_data(symbols):
+
+def get_intraday_data(symbols=TICKERS):
     all_data = {}
-    batch_size = 8
-    total_symbols = len(symbols)
-    for start in range(0, total_symbols, batch_size):
-        batch = symbols[start:start+batch_size]
-        for s in batch:
-            all_data[s] = fetch_twelvedata_bars(s)
-        if start + batch_size < total_symbols:
-            print("waiting 61 seconds before next batch...")
-            time.sleep(61)
+    for i, symbol in enumerate(symbols):
+        bars = fetch_twelvedata_bars(symbol)
+        all_data[symbol] = bars
+        # pause ~7.5s between requests to stay under 8/min
+        if i < len(symbols) - 1:
+            time.sleep(7.5)
     return all_data
+
 
 
 def compute_technical(symbol):
@@ -372,6 +371,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
