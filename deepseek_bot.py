@@ -14,11 +14,12 @@ load_dotenv()
 
 API_KEY = os.getenv("DEEPSEEK_KEY")
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
+TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
 ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
 BASE_URL = "https://paper-api.alpaca.markets"
 
-if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET]):
+if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
     raise SystemExit("missing env vars for API keys")
 
 api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
@@ -107,25 +108,40 @@ def fetch_finnhub_social(symbol):
         return ""
 
 # ----- PRICE DATA -----
-def fetch_finnhub_bars(symbol, resolution="60", count=150):
-    now = int(time.time())
-    start = now - (count * int(resolution) * 60)
+def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
     try:
         r = requests.get(
-            f"https://finnhub.io/api/v1/stock/candle?symbol={symbol}&resolution={resolution}&from={start}&to={now}&token={FINNHUB_KEY}",
-            timeout=5
+            "https://api.twelvedata.com/time_series",
+            params={
+                "symbol": symbol,
+                "interval": interval,
+                "outputsize": limit,
+                "apikey": TWELVEDATA_KEY
+            },
+            timeout=8
         )
         data = safe_json(r)
-        print(symbol, "bars raw:", data)  # <--- add this
-        if data.get("s") == "ok":
-            return data
+        print(symbol, "bars raw:", data)
+
+        if "values" not in data:
+            return []
+
+        bars = []
+        for v in reversed(data["values"]):
+            bars.append({
+                "time": v["datetime"],
+                "close": float(v["close"]),
+                "volume": float(v["volume"])
+            })
+
+        return bars
     except Exception as e:
         print(symbol, "bars error:", e)
-    return {}
+        return []
 
 
 def get_intraday_data(symbol):
-    bars = fetch_finnhub_bars(symbol, resolution="1", count=200)
+    return fetch_twelvedata_bars(symbol)
     if not bars or "c" not in bars:
         return []
     return [{"time": t, "close": c, "volume": v} for t, c, v in zip(bars["t"], bars["c"], bars["v"])]
@@ -346,5 +362,6 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
