@@ -240,38 +240,80 @@ def ask_deepseek(prompt):
 
 # ----- TRADING -----
 def place_order(symbol, signal):
-    account = api.get_account()
-    buying_power = float(account.cash)
     signal = signal.upper()
+    max_retries = 3
+    retry_delay = 5  # seconds
     position_size = 0
+
+    # get account with retries
+    for attempt in range(max_retries):
+        try:
+            account = api.get_account()
+            buying_power = float(account.cash)
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"get_account error, retrying in {retry_delay}s: {e}")
+                time.sleep(retry_delay)
+            else:
+                print(f"Failed to get account after {max_retries} attempts: {e}")
+                return
 
     if signal == "STRONG BUY":
         position_size = buying_power * 0.1
     elif signal == "BUY":
         position_size = buying_power * 0.05
-    elif signal in ["SELL","STRONG SELL"]:
-        try:
-            qty = int(api.get_position(symbol).qty)
-            if qty > 0:
-                api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
-                print(f"Sold {qty} shares of {symbol}")
-        except:
-            print(f"No position to sell for {symbol}")
+    elif signal in ["SELL", "STRONG SELL"]:
+        for attempt in range(max_retries):
+            try:
+                qty = int(api.get_position(symbol).qty)
+                if qty > 0:
+                    api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side='sell',
+                        type='market',
+                        time_in_force='day'
+                    )
+                    print(f"Sold {qty} shares of {symbol}")
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"sell order error, retrying in {retry_delay}s: {e}")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"No position to sell or failed after {max_retries} attempts for {symbol}")
         return
     else:
         return
 
+    # get intraday price
     intraday = get_intraday_data(symbol)
     price = intraday[-1]["close"] if intraday else 0
     qty = int(position_size // price) if price > 0 else 0
     if qty < 1:
         print(f"Not enough cash to buy {symbol}")
         return
-    try:
-        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-        print(f"Bought {qty} shares of {symbol} at ~{price}")
-    except Exception as e:
-        print(f"Error buying {symbol}: {e}")
+
+    # submit buy order with retries
+    for attempt in range(max_retries):
+        try:
+            api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side='buy',
+                type='market',
+                time_in_force='day'
+            )
+            print(f"Bought {qty} shares of {symbol} at ~{price}")
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"buy order error, retrying in {retry_delay}s: {e}")
+                time.sleep(retry_delay)
+            else:
+                print(f"Failed to buy {symbol} after {max_retries} attempts: {e}")
+
 
 # ----- BOT LOOP -----
 def run_bot():
@@ -369,6 +411,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
