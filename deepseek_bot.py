@@ -116,11 +116,13 @@ def fetch_finnhub_bars(symbol, resolution="60", count=150):
             timeout=5
         )
         data = safe_json(r)
+        print(symbol, "bars raw:", data)  # <--- add this
         if data.get("s") == "ok":
             return data
-    except:
-        pass
+    except Exception as e:
+        print(symbol, "bars error:", e)
     return {}
+
 
 def get_intraday_data(symbol):
     bars = fetch_finnhub_bars(symbol, resolution="1", count=200)
@@ -344,4 +346,5 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
