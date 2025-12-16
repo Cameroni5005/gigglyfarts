@@ -255,8 +255,8 @@ def run_bot():
     last_run_date = None
 
     while True:
-        print("bot alive", now)
         now = datetime.datetime.now(datetime.timezone.utc).astimezone()
+        print("bot alive", now)
         if now.date() != last_run_date:
             run_today.clear()
             last_run_date = now.date()
@@ -280,6 +280,7 @@ def run_bot():
 
         time.sleep(30)
 
+
 def execute_trading_logic():
     summaries = get_stock_summary(TICKERS)
     if not summaries:
@@ -301,14 +302,15 @@ def execute_trading_logic():
             sym = parts[0].strip()
             sig = parts[1].split("(")[0].strip()
             place_order(sym, sig)
-            
-   def manual_trigger():
+
+
+def manual_trigger():
     while True:
         cmd = input().strip().lower()
         if cmd == "y":
             print("manual trigger activated")
             execute_trading_logic()
-
+            
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
 threading.Thread(target=manual_trigger, daemon=True).start()
@@ -323,5 +325,6 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
