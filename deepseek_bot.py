@@ -280,7 +280,6 @@ def run_bot():
 
         time.sleep(30)
 
-
 def execute_trading_logic():
     summaries = get_stock_summary(TICKERS)
     if not summaries:
@@ -303,9 +302,7 @@ def execute_trading_logic():
             sig = parts[1].split("(")[0].strip()
             place_order(sym, sig)
 
-
-# ----- MANUAL TRIGGER VIA FLASK -----
-# no more input loop, use HTTP route instead
+# ----- FLASK APP -----
 app = Flask(__name__)
 
 @app.route("/")
@@ -318,22 +315,9 @@ def trigger():
     execute_trading_logic()
     return "Trading logic executed"
 
-
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
-
-
-# Flask app
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Gigglyfarts bot running"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
