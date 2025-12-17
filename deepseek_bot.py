@@ -117,7 +117,7 @@ TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
 import time, threading
 
 TWELVE_RATE_LIMIT = 8      # credits per minute
-TWELVE_WINDOW = 60         # seconds
+TWELVE_WINDOW = 61         # seconds
 _twelve_calls = []
 _twelve_lock = threading.Lock()
 
@@ -436,10 +436,11 @@ def trigger():
                 print(f"{k}: MISSING")
                 missing = True
 
-        if missing:
-            print("cannot run trading logic, missing keys")
-        else:
-            execute_trading_logic()
+if missing:
+    print("cannot run trading logic, missing keys")
+else:
+    execute_trading_logic()
+
 
     except Exception as e:
         print("error during manual trigger:", e)
@@ -454,6 +455,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
