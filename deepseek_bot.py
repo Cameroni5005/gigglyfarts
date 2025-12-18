@@ -105,7 +105,6 @@ def fetch_finnhub_social(symbol):
         if isinstance(data, dict):
             reddit = data.get("reddit")
             if reddit and isinstance(reddit, list) and len(reddit) > 0:
-                # safe fallback if structure is unexpected
                 mention = reddit[0].get("mention", 0) if isinstance(reddit[0], dict) else 0
                 sentiment = "bullish" if mention > 5 else ""
         CACHE['social'][key] = sentiment
@@ -270,7 +269,6 @@ def ask_deepseek(prompt):
     r = requests.post(url, headers=headers, json=payload, timeout=30)
     r.raise_for_status()
     data = r.json()
-    # defensive: ensure expected structure
     return data.get("choices", [])[0].get("message", {}).get("content", "") if isinstance(data, dict) else ""
 
 # ----- TRADING -----
@@ -309,7 +307,7 @@ def place_order(symbol, signal):
             position_size = buying_power * 0.1
         elif signal == "BUY":
             position_size = buying_power * 0.05
-        elif signal in ["SELL", "STRONG SELL"]:
+        elif "SELL" in signal:
             # sell existing position if any
             for attempt in range(max_retries):
                 try:
@@ -335,7 +333,6 @@ def place_order(symbol, signal):
                         print(f"No position to sell or failed after {max_retries} attempts for {symbol}")
             return
         else:
-            # unknown signal -> do nothing
             print(f"unknown or hold signal for {symbol}: '{signal}'")
             return
 
@@ -356,7 +353,6 @@ def place_order(symbol, signal):
                 return
         except Exception as e:
             print("failed to get market clock:", e)
-            # if we can't get clock, proceed cautiously (still try submitting)
 
         # submit buy order with retries
         for attempt in range(max_retries):
@@ -399,21 +395,28 @@ def run_bot():
                 traded_close = False
                 last_trade_day = now.date()
 
-
             if not clock.is_open:
                 time.sleep(60)
                 continue
 
-            minutes_since_open = (now - clock.next_open).total_seconds() / 60
-            minutes_until_close = (clock.next_close - now).total_seconds() / 60
+            # SAFER: use Alpaca calendar
+            calendar = api.get_calendar(start=now.date(), end=now.date())
+            if calendar:
+                market_open = calendar[0].open
+                market_close = calendar[0].close
+            else:
+                # fallback
+                market_open = now.replace(hour=9, minute=30, second=0)
+                market_close = now.replace(hour=16, minute=0, second=0)
 
-            # 20 minutes after open
+            minutes_since_open = (now - market_open).total_seconds() / 60
+            minutes_until_close = (market_close - now).total_seconds() / 60
+
             if not traded_open and minutes_since_open >= 20:
                 print("triggering trading logic (open)")
                 execute_trading_logic()
                 traded_open = True
 
-            # 10 minutes before close
             if not traded_close and minutes_until_close <= 10:
                 print("triggering trading logic (close)")
                 execute_trading_logic()
@@ -440,20 +443,25 @@ def execute_trading_logic():
         print("error talking to Deepseek:", e)
         return
 
-    # aligned with try/except
+    # prevent duplicate signals
+    seen = set()
     for line in signals.splitlines():
         if ":" not in line:
             continue
 
         sym, raw_sig = line.split(":", 1)
-
         sym = sym.strip().upper()
+
+        if sym in seen:
+            print(f"duplicate signal ignored for {sym}")
+            continue
+        seen.add(sym)
 
         sig = raw_sig.upper()
         sig = sig.split("(")[0]
         sig = sig.replace(".", "")
         sig = sig.replace("-", " ")
-        sig = " ".join(sig.split())  # normalize spaces
+        sig = " ".join(sig.split())
 
         print("parsed signal:", sym, "→", sig)
 
@@ -464,49 +472,15 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Gigglyfarts bot running"
+    return "Giggity Bot Online!"
 
 @app.route("/trigger")
 def trigger():
-    old_stdout = sys.stdout
-    sys.stdout = mystdout = StringIO()
-
-    try:
-        print("manual trigger activated")
-
-        keys = {
-            "DEEPSEEK_KEY": API_KEY,
-            "FINNHUB_KEY": FINNHUB_KEY,
-            "ALPACA_KEY": ALPACA_KEY,
-            "ALPACA_SECRET": ALPACA_SECRET,
-            "TWELVEDATA_KEY": TWELVEDATA_KEY
-        }
-
-        missing = False
-        for k, v in keys.items():
-            if v:
-                print(f"{k}: FOUND")
-            else:
-                print(f"{k}: MISSING")
-                missing = True
-
-        if missing:
-            print("cannot run trading logic, missing keys")
-        else:
-            execute_trading_logic()
-
-    except Exception as e:
-        print("error during manual trigger:", e)
-
-    finally:
-        sys.stdout = old_stdout
-
-    return "<pre>" + mystdout.getvalue() + "</pre>"
-
-# start bot thread
-threading.Thread(target=run_bot, daemon=True).start()
+    threading.Thread(target=execute_trading_logic, daemon=True).start()
+    return "Triggered trading logic!"
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    t = threading.Thread(target=run_bot, daemon=True)
+    t.start()
+    port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
