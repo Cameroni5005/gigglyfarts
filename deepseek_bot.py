@@ -415,23 +415,24 @@ def execute_trading_logic():
         print("error talking to Deepseek:", e)
         return
 
-   for line in signals.splitlines():
-    if ":" not in line:
-        continue
+    # aligned with try/except
+    for line in signals.splitlines():
+        if ":" not in line:
+            continue
 
-    sym, raw_sig = line.split(":", 1)
+        sym, raw_sig = line.split(":", 1)
 
-    sym = sym.strip().upper()
+        sym = sym.strip().upper()
 
-    sig = raw_sig.upper()
-    sig = sig.split("(")[0]
-    sig = sig.replace(".", "")
-    sig = sig.replace("-", " ")
-    sig = " ".join(sig.split())  # normalize spaces
+        sig = raw_sig.upper()
+        sig = sig.split("(")[0]
+        sig = sig.replace(".", "")
+        sig = sig.replace("-", " ")
+        sig = " ".join(sig.split())  # normalize spaces
 
-    print("parsed signal:", sym, "→", sig)
+        print("parsed signal:", sym, "→", sig)
 
-    place_order(sym, sig)
+        place_order(sym, sig)
 
 
 # ----- FLASK APP -----
@@ -485,6 +486,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
