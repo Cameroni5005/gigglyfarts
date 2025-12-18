@@ -305,7 +305,7 @@ def place_order(symbol, signal):
 
         position_size = 0.0
 
-        if signal == "STRONG BUY":
+        if "STRONG BUY" in signal:
             position_size = buying_power * 0.1
         elif signal == "BUY":
             position_size = buying_power * 0.05
@@ -382,36 +382,48 @@ def place_order(symbol, signal):
 # ----- BOT LOOP -----
 def run_bot():
     print("bot loop online")
-    MARKET_OPEN = datetime.time(6, 30)
-    MARKET_CLOSE = datetime.time(13, 0)
-    run_today = set()
-    last_run_date = None
+
+    last_trade_day = None
+    traded_open = False
+    traded_close = False
 
     while True:
-        now = datetime.datetime.now(datetime.timezone.utc).astimezone()
-        print("bot alive", now)
-        if now.date() != last_run_date:
-            run_today.clear()
-            last_run_date = now.date()
+        try:
+            clock = api.get_clock()
+            now = clock.timestamp
 
-        if now.weekday() >= 5:
-            time.sleep(3600)
-            continue
+            print("bot alive", now, "market open:", clock.is_open)
 
-        open_run_time = (datetime.datetime.combine(now, MARKET_OPEN) + datetime.timedelta(minutes=20)).time()
-        close_run_time = (datetime.datetime.combine(now, MARKET_CLOSE) - datetime.timedelta(minutes=10)).time()
+            if last_trade_day != now.date():
+                traded_open = False
+                traded_close = False
+                last_trade_day = now.date()
 
-        if "open" not in run_today and now.time() >= open_run_time:
-            print("triggering trading logic (open)", now.time())
-            run_today.add("open")
-            execute_trading_logic()
 
-        if "close" not in run_today and now.time() >= close_run_time:
-            print("triggering trading logic (close)", now.time())
-            run_today.add("close")
-            execute_trading_logic()
+            if not clock.is_open:
+                time.sleep(60)
+                continue
+
+            minutes_since_open = (now - clock.next_open).total_seconds() / 60
+            minutes_until_close = (clock.next_close - now).total_seconds() / 60
+
+            # 20 minutes after open
+            if not traded_open and minutes_since_open >= 20:
+                print("triggering trading logic (open)")
+                execute_trading_logic()
+                traded_open = True
+
+            # 10 minutes before close
+            if not traded_close and minutes_until_close <= 10:
+                print("triggering trading logic (close)")
+                execute_trading_logic()
+                traded_close = True
+
+        except Exception as e:
+            print("run_bot error:", e)
 
         time.sleep(30)
+
 
 def execute_trading_logic():
     summaries = get_stock_summary(TICKERS)
@@ -497,3 +509,4 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
