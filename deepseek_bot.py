@@ -274,21 +274,35 @@ def ask_deepseek(prompt):
 
 # ----- TRADING -----
 def place_order(symbol, signal):
+    account = api.get_account()
+    print("alpaca status:", account.status)
+    print("trading blocked:", account.trading_blocked)
+
+    if account.status != "ACTIVE" or account.trading_blocked:
+        print("alpaca account not tradable")
+        return
+
     signal = signal.upper()
     max_retries = 3
     retry_delay = 5
 
-    for attempt in range(max_retries):
-        try:
-            account = api.get_account()
-            buying_power = float(account.cash)
-            break
-        except Exception as e:
-            if attempt < max_retries-1:
-                time.sleep(retry_delay)
-            else:
-                print(f"Failed to get account: {e}")
-                return
+for attempt in range(max_retries):
+    try:
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side='buy',
+            type='market',
+            time_in_force='day'
+        )
+        print(f"BOUGHT {qty} {symbol} @ ~{price}")
+        break
+
+    except Exception as e:
+        print(f"alpaca BUY error {symbol} attempt {attempt+1}:", repr(e))
+        if attempt < max_retries - 1:
+            time.sleep(retry_delay)
+
 
     # rest of your logic (BUY/SELL) remains the same
     # wrap api.submit_order in similar retry loop
@@ -326,9 +340,11 @@ def place_order(symbol, signal):
     intraday = get_intraday_data(symbol)
     price = intraday[-1]["close"] if intraday else 0
     qty = int(position_size // price) if price > 0 else 0
-    if qty < 1:
-        print(f"Not enough cash to buy {symbol}")
-        return
+
+if qty < 1:
+    print(f"{symbol} skipped — qty=0 (price {price}, buying power {buying_power})")
+    return
+
 
     # submit buy order with retries
     for attempt in range(max_retries):
@@ -399,12 +415,24 @@ def execute_trading_logic():
         print("error talking to Deepseek:", e)
         return
 
-    for line in signals.splitlines():
-        parts = line.split(":")
-        if len(parts) >= 2:
-            sym = parts[0].strip()
-            sig = parts[1].split("(")[0].strip()
-            place_order(sym, sig)
+   for line in signals.splitlines():
+    if ":" not in line:
+        continue
+
+    sym, raw_sig = line.split(":", 1)
+
+    sym = sym.strip().upper()
+
+    sig = raw_sig.upper()
+    sig = sig.split("(")[0]
+    sig = sig.replace(".", "")
+    sig = sig.replace("-", " ")
+    sig = " ".join(sig.split())  # normalize spaces
+
+    print("parsed signal:", sym, "→", sig)
+
+    place_order(sym, sig)
+
 
 # ----- FLASK APP -----
 app = Flask(__name__)
@@ -457,6 +485,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
