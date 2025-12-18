@@ -327,36 +327,37 @@ def place_order(symbol, signal):
         else:
             return
 
-        # get intraday price for buy orders
-        intraday = get_intraday_data(symbol)
-        price = intraday[-1]["close"] if intraday else 0
-        qty = int(position_size // price) if price > 0 else 0
+       # after handling SELL/STRONG SELL and returns
+# we’re now in the BUY branch
 
-        if qty < 1:
-            print(f"Not enough cash to buy {symbol}")
-            return
+# get intraday price for buy orders
+intraday = get_intraday_data(symbol)
+price = intraday[-1]["close"] if intraday else 0
+qty = int(position_size // price) if price > 0 else 0
 
-        # submit buy order with retries
-        for attempt in range(max_retries):
-            try:
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side='buy',
-                    type='market',
-                    time_in_force='day'
-                )
-                print(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
-                break
-            except Exception as e:
-                print(f"alpaca BUY error {symbol} attempt {attempt+1}:", repr(e))
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                else:
-                    print(f"FAILED to buy {symbol} after {max_retries} attempts")
+if qty < 1:
+    print(f"Not enough cash to buy {symbol}")
+    return
 
+# submit buy order with retries
+for attempt in range(max_retries):
+    try:
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side='buy',
+            type='market',
+            time_in_force='day'
+        )
+        print(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
+        break
     except Exception as e:
-        print("place_order fatal error:", e)
+        print(f"alpaca BUY error {symbol} attempt {attempt+1}:", repr(e))
+        if attempt < max_retries - 1:
+            time.sleep(retry_delay)
+        else:
+            print(f"FAILED to buy {symbol} after {max_retries} attempts")
+
 
 
 # get intraday price
@@ -515,6 +516,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
