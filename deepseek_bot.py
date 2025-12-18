@@ -308,33 +308,40 @@ for attempt in range(max_retries):
     # wrap api.submit_order in similar retry loop
 
 
-    if signal == "STRONG BUY":
-        position_size = buying_power * 0.1
-    elif signal == "BUY":
-        position_size = buying_power * 0.05
-    elif signal in ["SELL", "STRONG SELL"]:
-        for attempt in range(max_retries):
-            try:
-                qty = int(api.get_position(symbol).qty)
-                if qty > 0:
-                    api.submit_order(
-                        symbol=symbol,
-                        qty=qty,
-                        side='sell',
-                        type='market',
-                        time_in_force='day'
-                    )
-                    print(f"Sold {qty} shares of {symbol}")
-                break
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print(f"sell order error, retrying in {retry_delay}s: {e}")
-                    time.sleep(retry_delay)
-                else:
-                    print(f"No position to sell or failed after {max_retries} attempts for {symbol}")
-        return
-    else:
-        return
+   if signal == "STRONG BUY":
+    position_size = buying_power * 0.1
+elif signal == "BUY":
+    position_size = buying_power * 0.05
+elif signal in ["SELL", "STRONG SELL"]:
+    for attempt in range(max_retries):
+        try:
+            qty = int(api.get_position(symbol).qty)
+            if qty > 0:
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='sell',
+                    type='market',
+                    time_in_force='day'
+                )
+                print(f"Sold {qty} shares of {symbol}")
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"sell order error, retrying in {retry_delay}s: {e}")
+                time.sleep(retry_delay)
+            else:
+                print(f"No position to sell or failed after {max_retries} attempts for {symbol}")
+    return  # ✅ inside the function, aligned with 'if signal'
+
+else:
+    return  # ✅ also inside the function, aligned with 'if signal'
+
+# get intraday price
+intraday = get_intraday_data(symbol)
+price = intraday[-1]["close"] if intraday else 0
+qty = int(position_size // price) if price > 0 else 0
+
 
     # get intraday price
     intraday = get_intraday_data(symbol)
@@ -486,6 +493,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
