@@ -72,7 +72,7 @@ def fetch_finnhub_news(symbol):
         summary = " | ".join(headlines)
         CACHE['news'][key] = summary
         return summary
-    except:
+    except Exception:
         return "no major news"
 
 # ----- ANALYST -----
@@ -85,7 +85,7 @@ def fetch_finnhub_analyst(symbol):
         data = safe_json(r)
         rating = data[0].get("rating") if data and isinstance(data, list) else None
         return f"analyst avg {rating}" if rating else ""
-    except:
+    except Exception:
         return ""
 
 # ----- SOCIAL -----
@@ -101,21 +101,19 @@ def fetch_finnhub_social(symbol):
             timeout=5
         )
         data = safe_json(r)
-        sentiment = "bullish" if data.get("reddit") and data["reddit"][0]["mention"] > 5 else ""
+        sentiment = ""
+        if isinstance(data, dict):
+            reddit = data.get("reddit")
+            if reddit and isinstance(reddit, list) and len(reddit) > 0:
+                # safe fallback if structure is unexpected
+                mention = reddit[0].get("mention", 0) if isinstance(reddit[0], dict) else 0
+                sentiment = "bullish" if mention > 5 else ""
         CACHE['social'][key] = sentiment
         return sentiment
-    except:
+    except Exception:
         return ""
 
 # ----- PRICE DATA -----
-# rotate through multiple 12Data keys per request
-TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
-
-# replace your multiple keys logic with just your single key
-TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
-
-import time, threading
-
 TWELVE_RATE_LIMIT = 8      # credits per minute
 TWELVE_WINDOW = 61         # seconds
 _twelve_calls = []
@@ -136,7 +134,6 @@ def twelve_rate_limit():
 
 def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
     try:
-        # 🔒 GLOBAL rate limiter (THIS is the fix)
         twelve_rate_limit()
 
         r = requests.get(
@@ -153,21 +150,18 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         data = safe_json(r)
         print(symbol, "bars raw:", data)
 
-        # 🚫 Rate limit or API error
-        if data.get("code") == 429:
+        if isinstance(data, dict) and data.get("code") == 429:
             print(symbol, "RATE LIMITED by TwelveData")
             return []
 
-        # 🚫 Invalid / empty response
         if not data or "values" not in data:
             print(f"{symbol} no valid bars, returning empty list")
             return []
 
-        # ✅ Parse bars
         bars = [{
-            "time": v["datetime"],
-            "close": float(v["close"]),
-            "volume": float(v["volume"])
+            "time": v.get("datetime"),
+            "close": float(v.get("close", 0)),
+            "volume": float(v.get("volume", 0))
         } for v in reversed(data["values"])]
 
         return bars
@@ -176,16 +170,11 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         print(symbol, "bars error:", e)
         return []
 
-
-
 def get_intraday_data(symbol):
     bars = fetch_twelvedata_bars(symbol)
     if not isinstance(bars, list):
         return []
     return bars
-
-
-
 
 def compute_technical(symbol):
     data = get_intraday_data(symbol)
@@ -195,8 +184,8 @@ def compute_technical(symbol):
     closes = [d["close"] for d in data]
     volumes = [d["volume"] for d in data]
 
-    ma5 = round(sum(closes[-5:])/5, 2) if len(closes) >= 5 else None
-    ma20 = round(sum(closes[-20:])/20, 2) if len(closes) >= 20 else None
+    ma5 = round(sum(closes[-5:]) / 5, 2) if len(closes) >= 5 else None
+    ma20 = round(sum(closes[-20:]) / 20, 2) if len(closes) >= 20 else None
 
     rsi = None
     rsi_period = 14
@@ -204,44 +193,54 @@ def compute_technical(symbol):
         deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
         gains = [d if d > 0 else 0 for d in deltas]
         losses = [-d if d < 0 else 0 for d in deltas]
-        avg_gain = sum(gains[:rsi_period])/rsi_period
-        avg_loss = sum(losses[:rsi_period])/rsi_period
+        avg_gain = sum(gains[:rsi_period]) / rsi_period
+        avg_loss = sum(losses[:rsi_period]) / rsi_period
         for g, l in zip(gains[rsi_period:], losses[rsi_period:]):
-            avg_gain = (avg_gain*(rsi_period-1) + g)/rsi_period
-            avg_loss = (avg_loss*(rsi_period-1) + l)/rsi_period
-        rsi = 100.0 if avg_loss == 0 else 0.0 if avg_gain == 0 else round(100-(100/(1+avg_gain/avg_loss)), 2)
+            avg_gain = (avg_gain * (rsi_period - 1) + g) / rsi_period
+            avg_loss = (avg_loss * (rsi_period - 1) + l) / rsi_period
+        rsi = 100.0 if avg_loss == 0 else 0.0 if avg_gain == 0 else round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
 
     last = closes[-1]
     prev = closes[-2] if len(closes) > 1 else last
     delta = round(last - prev, 2)
-    avg_vol30 = sum(volumes[-30:])/30 if len(volumes) >= 30 else volumes[-1]
-    vol_change = round((volumes[-1]-avg_vol30)/avg_vol30*100, 1)
+    avg_vol30 = (sum(volumes[-30:]) / 30) if len(volumes) >= 30 else volumes[-1]
+    vol_change = round((volumes[-1] - avg_vol30) / avg_vol30 * 100, 1) if avg_vol30 != 0 else 0
 
-    return {"price": round(last,2), "change": delta, "ma5": ma5, "ma20": ma20, "rsi": rsi,
-            "volume": volumes[-1], "vol_change": vol_change}
+    return {
+        "price": round(last, 2),
+        "change": delta,
+        "ma5": ma5,
+        "ma20": ma20,
+        "rsi": rsi,
+        "volume": volumes[-1],
+        "vol_change": vol_change
+    }
 
 # ----- STOCK SUMMARY -----
 def get_stock_summary(tickers):
     summaries = []
     for t in tickers:
-        tech = compute_technical(t)
-        if not tech:
-            continue
-        summaries.append({
-            "symbol": t,
-            "price": tech["price"],
-            "change": tech["change"],
-            "volume": tech["volume"],
-            "ma5": tech["ma5"],
-            "ma20": tech["ma20"],
-            "rsi": tech["rsi"],
-            "vol_change": tech["vol_change"],
-            "sector": SECTORS.get(t, ""),
-            "news": fetch_finnhub_news(t),
-            "analyst": fetch_finnhub_analyst(t),
-            "social": fetch_finnhub_social(t)
-        })
-        time.sleep(0.05)
+        try:
+            tech = compute_technical(t)
+            if not tech:
+                continue
+            summaries.append({
+                "symbol": t,
+                "price": tech["price"],
+                "change": tech["change"],
+                "volume": tech["volume"],
+                "ma5": tech["ma5"],
+                "ma20": tech["ma20"],
+                "rsi": tech["rsi"],
+                "vol_change": tech["vol_change"],
+                "sector": SECTORS.get(t, ""),
+                "news": fetch_finnhub_news(t),
+                "analyst": fetch_finnhub_analyst(t),
+                "social": fetch_finnhub_social(t)
+            })
+            time.sleep(0.05)
+        except Exception as e:
+            print(f"error building summary for {t}: {e}")
     return summaries
 
 # ----- PROMPT -----
@@ -267,10 +266,12 @@ def build_prompt(summaries):
 def ask_deepseek(prompt):
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    payload = {"model":"deepseek-chat","messages":[{"role":"user","content":prompt}],"temperature":0.2,"max_tokens":500}
-    r = requests.post(url, headers=headers, json=payload)
+    payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 500}
+    r = requests.post(url, headers=headers, json=payload, timeout=30)
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    data = r.json()
+    # defensive: ensure expected structure
+    return data.get("choices", [])[0].get("message", {}).get("content", "") if isinstance(data, dict) else ""
 
 # ----- TRADING -----
 def place_order(symbol, signal):
@@ -283,30 +284,37 @@ def place_order(symbol, signal):
             print("alpaca account not tradable")
             return
 
-        signal = signal.upper()
+        signal = signal.upper().strip()
         max_retries = 3
         retry_delay = 5
 
+        # fetch buying power with retries
+        buying_power = 0.0
         for attempt in range(max_retries):
             try:
                 account = api.get_account()
                 buying_power = float(account.cash)
                 break
             except Exception as e:
+                print(f"get_account attempt {attempt+1} failed: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                 else:
-                    print(f"Failed to get account: {e}")
+                    print(f"Failed to get account after {max_retries} attempts: {e}")
                     return
+
+        position_size = 0.0
 
         if signal == "STRONG BUY":
             position_size = buying_power * 0.1
         elif signal == "BUY":
             position_size = buying_power * 0.05
         elif signal in ["SELL", "STRONG SELL"]:
+            # sell existing position if any
             for attempt in range(max_retries):
                 try:
-                    qty = int(api.get_position(symbol).qty)
+                    pos = api.get_position(symbol)
+                    qty = int(pos.qty)
                     if qty > 0:
                         api.submit_order(
                             symbol=symbol,
@@ -316,91 +324,66 @@ def place_order(symbol, signal):
                             time_in_force='day'
                         )
                         print(f"Sold {qty} shares of {symbol}")
+                    else:
+                        print(f"no position to sell for {symbol}")
                     break
                 except Exception as e:
+                    print(f"sell attempt {attempt+1} error for {symbol}: {e}")
                     if attempt < max_retries - 1:
-                        print(f"sell order error, retrying in {retry_delay}s: {e}")
                         time.sleep(retry_delay)
                     else:
                         print(f"No position to sell or failed after {max_retries} attempts for {symbol}")
             return
         else:
+            # unknown signal -> do nothing
+            print(f"unknown or hold signal for {symbol}: '{signal}'")
             return
 
-       # after handling SELL/STRONG SELL and returns
-# we’re now in the BUY branch
+        # BUY path: get recent intraday price
+        intraday = get_intraday_data(symbol)
+        price = intraday[-1]["close"] if intraday else 0
+        qty = int(position_size // price) if price > 0 else 0
 
-# get intraday price for buy orders
-intraday = get_intraday_data(symbol)
-price = intraday[-1]["close"] if intraday else 0
-qty = int(position_size // price) if price > 0 else 0
+        if qty < 1:
+            print(f"{symbol} skipped — qty=0 (price {price}, buying power {buying_power})")
+            return
 
-if qty < 1:
-    print(f"Not enough cash to buy {symbol}")
-    return
-
-# submit buy order with retries
-for attempt in range(max_retries):
-    try:
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side='buy',
-            type='market',
-            time_in_force='day'
-        )
-        print(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
-        break
-    except Exception as e:
-        print(f"alpaca BUY error {symbol} attempt {attempt+1}:", repr(e))
-        if attempt < max_retries - 1:
-            time.sleep(retry_delay)
-        else:
-            print(f"FAILED to buy {symbol} after {max_retries} attempts")
-
-
-
-# get intraday price
-intraday = get_intraday_data(symbol)
-price = intraday[-1]["close"] if intraday else 0
-qty = int(position_size // price) if price > 0 else 0
-
-
-    # get intraday price
-    intraday = get_intraday_data(symbol)
-    price = intraday[-1]["close"] if intraday else 0
-    qty = int(position_size // price) if price > 0 else 0
-
-if qty < 1:
-    print(f"{symbol} skipped — qty=0 (price {price}, buying power {buying_power})")
-    return
-
-
-    # submit buy order with retries
-    for attempt in range(max_retries):
+        # check market clock before submitting market orders
         try:
-            api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side='buy',
-                type='market',
-                time_in_force='day'
-            )
-            print(f"Bought {qty} shares of {symbol} at ~{price}")
-            break
+            clock = api.get_clock()
+            if not getattr(clock, "is_open", False):
+                print("market closed — skipping trades")
+                return
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"buy order error, retrying in {retry_delay}s: {e}")
-                time.sleep(retry_delay)
-            else:
-                print(f"Failed to buy {symbol} after {max_retries} attempts: {e}")
+            print("failed to get market clock:", e)
+            # if we can't get clock, proceed cautiously (still try submitting)
 
+        # submit buy order with retries
+        for attempt in range(max_retries):
+            try:
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='buy',
+                    type='market',
+                    time_in_force='day'
+                )
+                print(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
+                break
+            except Exception as e:
+                print(f"alpaca BUY error {symbol} attempt {attempt+1}:", repr(e))
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    print(f"FAILED to buy {symbol} after {max_retries} attempts")
+    except Exception as e:
+        print("place_order fatal error:", e)
 
 # ----- BOT LOOP -----
 def run_bot():
     print("bot loop online")
-    MARKET_OPEN = datetime.time(6,30)
-    MARKET_CLOSE = datetime.time(13,0)
+    MARKET_OPEN = datetime.time(6, 30)
+    MARKET_CLOSE = datetime.time(13, 0)
     run_today = set()
     last_run_date = None
 
@@ -415,8 +398,8 @@ def run_bot():
             time.sleep(3600)
             continue
 
-        open_run_time = (datetime.datetime.combine(now, MARKET_OPEN)+datetime.timedelta(minutes=20)).time()
-        close_run_time = (datetime.datetime.combine(now, MARKET_CLOSE)-datetime.timedelta(minutes=10)).time()
+        open_run_time = (datetime.datetime.combine(now, MARKET_OPEN) + datetime.timedelta(minutes=20)).time()
+        close_run_time = (datetime.datetime.combine(now, MARKET_CLOSE) - datetime.timedelta(minutes=10)).time()
 
         if "open" not in run_today and now.time() >= open_run_time:
             print("triggering trading logic (open)", now.time())
@@ -464,7 +447,6 @@ def execute_trading_logic():
 
         place_order(sym, sig)
 
-
 # ----- FLASK APP -----
 app = Flask(__name__)
 
@@ -509,28 +491,9 @@ def trigger():
 
     return "<pre>" + mystdout.getvalue() + "</pre>"
 
-
 # start bot thread
 threading.Thread(target=run_bot, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
