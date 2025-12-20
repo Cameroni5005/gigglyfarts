@@ -273,6 +273,8 @@ def ask_deepseek(prompt):
 
 # ----- TRADING -----
 def place_order(symbol, signal):
+    print("SIGNAL READY:", sym, sig)
+    print("buying power:", buying_power, "price:", price, "calculated qty:", qty)
     try:
         account = api.get_account()
         print("alpaca status:", account.status)
@@ -491,4 +493,5 @@ if __name__ == "__main__":
     t.start()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
