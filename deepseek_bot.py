@@ -396,6 +396,7 @@ def run_bot():
                 last_trade_day = now.date()
 
             if not clock.is_open:
+                print("market closed — sleeping")
                 time.sleep(60)
                 continue
 
@@ -412,6 +413,7 @@ def run_bot():
             minutes_since_open = (now - market_open).total_seconds() / 60
             minutes_until_close = (market_close - now).total_seconds() / 60
 
+            # original triggers
             if not traded_open and minutes_since_open >= 20:
                 print("triggering trading logic (open)")
                 execute_trading_logic()
@@ -422,10 +424,15 @@ def run_bot():
                 execute_trading_logic()
                 traded_close = True
 
+            # FORCE run every loop while market is open
+            print("forcing trading logic run")
+            execute_trading_logic()
+
         except Exception as e:
             print("run_bot error:", e)
 
         time.sleep(30)
+
 
 
 def execute_trading_logic():
@@ -484,3 +491,4 @@ if __name__ == "__main__":
     t.start()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
