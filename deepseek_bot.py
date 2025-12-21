@@ -273,8 +273,6 @@ def ask_deepseek(prompt):
 
 # ----- TRADING -----
 def place_order(symbol, signal):
-    print("SIGNAL READY:", sym, sig)
-    print("buying power:", buying_power, "price:", price, "calculated qty:", qty)
     try:
         account = api.get_account()
         print("alpaca status:", account.status)
@@ -347,6 +345,9 @@ def place_order(symbol, signal):
             print(f"{symbol} skipped — qty=0 (price {price}, buying power {buying_power})")
             return
 
+        print("SIGNAL READY:", symbol, signal)
+        print("buying power:", buying_power, "price:", price, "calculated qty:", qty)
+
         # check market clock before submitting market orders
         try:
             clock = api.get_clock()
@@ -384,6 +385,7 @@ def run_bot():
     last_trade_day = None
     traded_open = False
     traded_close = False
+    last_trade_time = datetime.datetime.min
 
     while True:
         try:
@@ -426,15 +428,15 @@ def run_bot():
                 execute_trading_logic()
                 traded_close = True
 
-            # FORCE run every loop while market is open
-            print("forcing trading logic run")
-            execute_trading_logic()
+            # FORCE run every 5 min
+            if (datetime.datetime.now() - last_trade_time).total_seconds() > 300:
+                execute_trading_logic()
+                last_trade_time = datetime.datetime.now()
 
         except Exception as e:
             print("run_bot error:", e)
 
         time.sleep(30)
-
 
 
 def execute_trading_logic():
@@ -466,12 +468,7 @@ def execute_trading_logic():
             continue
         seen.add(sym)
 
-        sig = raw_sig.upper()
-        sig = sig.split("(")[0]
-        sig = sig.replace(".", "")
-        sig = sig.replace("-", " ")
-        sig = " ".join(sig.split())
-
+        sig = raw_sig.split("(")[0].strip().upper()
         print("parsed signal:", sym, "→", sig)
 
         place_order(sym, sig)
@@ -489,9 +486,8 @@ def trigger():
     return "Triggered trading logic!"
 
 if __name__ == "__main__":
-    t = threading.Thread(target=run_bot, daemon=True)
-    t.start()
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        t = threading.Thread(target=run_bot, daemon=True)
+        t.start()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
