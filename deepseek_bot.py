@@ -269,6 +269,7 @@ def place_order(symbol, signal):
     if not api:
         log.warning(f"Alpaca API not initialized — skipping {symbol}")
         return
+        
 for i in range(3):
     try:
         account = api.get_account()
@@ -412,4 +413,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
