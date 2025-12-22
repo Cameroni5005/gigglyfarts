@@ -2,12 +2,13 @@ import requests
 import datetime
 import time
 import threading
-from alpaca_trade_api.rest import REST
+from alpaca_trade_api.rest import REST, APIError
 from dotenv import load_dotenv
 from flask import Flask
 import os
 from io import StringIO
 import sys
+import logging
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -22,8 +23,19 @@ BASE_URL = "https://paper-api.alpaca.markets"
 if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
     raise SystemExit("missing env vars for API keys")
 
-api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
+# ---------------- LOGGING ----------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
 
+# ---------------- ALPACA API ----------------
+api = None
+try:
+    api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
+    log.info("Connected to Alpaca API (paper trading)")
+except Exception:
+    log.exception("Failed to initialize Alpaca REST client")
+
+# ---------------- STOCK CONFIG ----------------
 TICKERS = [
     "AAPL","MSFT","AMZN","NVDA","GOOG","META","TSLA","NFLX","DIS","PYPL",
     "INTC","CSCO","ADBE","ORCL","IBM","CRM","AMD","UBER","LYFT","SHOP",
@@ -126,7 +138,7 @@ def twelve_rate_limit():
 
         if len(_twelve_calls) >= TWELVE_RATE_LIMIT:
             sleep_for = TWELVE_WINDOW - (now - _twelve_calls[0]) + 0.1
-            print(f"TwelveData rate limit hit, sleeping {sleep_for:.1f}s")
+            log.info(f"TwelveData rate limit hit, sleeping {sleep_for:.1f}s")
             time.sleep(sleep_for)
 
         _twelve_calls.append(time.time())
@@ -147,14 +159,14 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         )
 
         data = safe_json(r)
-        print(symbol, "bars raw:", data)
+        log.info(f"{symbol} bars raw: {data}")
 
         if isinstance(data, dict) and data.get("code") == 429:
-            print(symbol, "RATE LIMITED by TwelveData")
+            log.warning(f"{symbol} RATE LIMITED by TwelveData")
             return []
 
         if not data or "values" not in data:
-            print(f"{symbol} no valid bars, returning empty list")
+            log.warning(f"{symbol} no valid bars, returning empty list")
             return []
 
         bars = [{
@@ -166,7 +178,7 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         return bars
 
     except Exception as e:
-        print(symbol, "bars error:", e)
+        log.exception(f"{symbol} bars error: {e}")
         return []
 
 def get_intraday_data(symbol):
@@ -239,7 +251,7 @@ def get_stock_summary(tickers):
             })
             time.sleep(0.05)
         except Exception as e:
-            print(f"error building summary for {t}: {e}")
+            log.exception(f"error building summary for {t}: {e}")
     return summaries
 
 # ----- PROMPT -----
@@ -274,33 +286,29 @@ def ask_deepseek(prompt):
 # ----- TRADING -----
 def place_order(symbol, signal):
     try:
-        account = api.get_account()
-        print("alpaca status:", account.status)
-        print("trading blocked:", account.trading_blocked)
+        # ----- ACCOUNT CHECK -----
+        try:
+            account = api.get_account()
+            log.info("Alpaca account status: %s", account.status)
+            log.info("Trading blocked: %s", account.trading_blocked)
+            log.info("Cash: %s", account.cash)
+            log.info("Buying power: %s", account.buying_power)
+        except Exception as e:
+            log.exception("Failed to get Alpaca account: %s", e)
+            return
 
-        if account.status != "ACTIVE" or account.trading_blocked:
-            print("alpaca account not tradable")
+        if account.status != "ACTIVE":
+            log.warning("Account not ACTIVE — skipping trade")
+            return
+        if account.trading_blocked:
+            log.warning("Trading blocked — skipping trade")
             return
 
         signal = signal.upper().strip()
         max_retries = 3
         retry_delay = 5
 
-        # fetch buying power with retries
-        buying_power = 0.0
-        for attempt in range(max_retries):
-            try:
-                account = api.get_account()
-                buying_power = float(account.cash)
-                break
-            except Exception as e:
-                print(f"get_account attempt {attempt+1} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                else:
-                    print(f"Failed to get account after {max_retries} attempts: {e}")
-                    return
-
+        buying_power = float(account.cash)
         position_size = 0.0
 
         if "STRONG BUY" in signal:
@@ -308,79 +316,64 @@ def place_order(symbol, signal):
         elif signal == "BUY":
             position_size = buying_power * 0.05
         elif "SELL" in signal:
-            # sell existing position if any
             for attempt in range(max_retries):
                 try:
                     pos = api.get_position(symbol)
                     qty = int(pos.qty)
                     if qty > 0:
-                        api.submit_order(
-                            symbol=symbol,
-                            qty=qty,
-                            side='sell',
-                            type='market',
-                            time_in_force='day'
-                        )
-                        print(f"Sold {qty} shares of {symbol}")
+                        api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
+                        log.info("Sold %s shares of %s", qty, symbol)
                     else:
-                        print(f"no position to sell for {symbol}")
+                        log.info("No position to sell for %s", symbol)
                     break
                 except Exception as e:
-                    print(f"sell attempt {attempt+1} error for {symbol}: {e}")
+                    log.exception("Sell attempt %d error for %s: %s", attempt+1, symbol, e)
                     if attempt < max_retries - 1:
                         time.sleep(retry_delay)
-                    else:
-                        print(f"No position to sell or failed after {max_retries} attempts for {symbol}")
             return
         else:
-            print(f"unknown or hold signal for {symbol}: '{signal}'")
+            log.info("Unknown or HOLD signal for %s: '%s'", symbol, signal)
             return
 
-        # BUY path: get recent intraday price
+        # BUY path
         intraday = get_intraday_data(symbol)
         price = intraday[-1]["close"] if intraday else 0
         qty = int(position_size // price) if price > 0 else 0
 
         if qty < 1:
-            print(f"{symbol} skipped — qty=0 (price {price}, buying power {buying_power})")
+            log.warning("%s skipped — qty=0 (price %s, buying power %s)", symbol, price, buying_power)
             return
 
-        print("SIGNAL READY:", symbol, signal)
-        print("buying power:", buying_power, "price:", price, "calculated qty:", qty)
+        log.info("SIGNAL READY: %s → %s, calculated qty: %s", symbol, signal, qty)
 
-        # check market clock before submitting market orders
+        # check market clock
         try:
             clock = api.get_clock()
+            log.info("Market open: %s, current time: %s", clock.is_open, clock.timestamp)
             if not getattr(clock, "is_open", False):
-                print("market closed — skipping trades")
+                log.info("Market closed — skipping trades")
                 return
         except Exception as e:
-            print("failed to get market clock:", e)
+            log.exception("Failed to get market clock: %s", e)
 
-        # submit buy order with retries
         for attempt in range(max_retries):
             try:
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side='buy',
-                    type='market',
-                    time_in_force='day'
-                )
-                print(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
+                api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
+                log.info("BOUGHT %s shares of %s @ ~%s", qty, symbol, price)
                 break
             except Exception as e:
-                print(f"alpaca BUY error {symbol} attempt {attempt+1}:", repr(e))
+                log.exception("Alpaca BUY error %s attempt %d: %s", symbol, attempt+1, e)
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                 else:
-                    print(f"FAILED to buy {symbol} after {max_retries} attempts")
+                    log.error("FAILED to buy %s after %d attempts", symbol, max_retries)
+
     except Exception as e:
-        print("place_order fatal error:", e)
+        log.exception("place_order fatal error: %s", e)
 
 # ----- BOT LOOP -----
 def run_bot():
-    print("bot loop online")
+    log.info("bot loop online")
 
     last_trade_day = None
     traded_open = False
@@ -389,10 +382,14 @@ def run_bot():
 
     while True:
         try:
-            clock = api.get_clock()
-            now = clock.timestamp
-
-            print("bot alive", now, "market open:", clock.is_open)
+            try:
+                clock = api.get_clock()
+                now = clock.timestamp
+                log.info("bot alive %s, market open: %s", now, clock.is_open)
+            except Exception as e:
+                log.exception("Failed to get market clock: %s", e)
+                time.sleep(30)
+                continue
 
             if last_trade_day != now.date():
                 traded_open = False
@@ -400,94 +397,81 @@ def run_bot():
                 last_trade_day = now.date()
 
             if not clock.is_open:
-                print("market closed — sleeping")
+                log.info("market closed — sleeping")
                 time.sleep(60)
                 continue
 
-            # SAFER: use Alpaca calendar
             calendar = api.get_calendar(start=now.date(), end=now.date())
             if calendar:
                 market_open = calendar[0].open
                 market_close = calendar[0].close
             else:
-                # fallback
                 market_open = now.replace(hour=9, minute=30, second=0)
                 market_close = now.replace(hour=16, minute=0, second=0)
 
             minutes_since_open = (now - market_open).total_seconds() / 60
             minutes_until_close = (market_close - now).total_seconds() / 60
 
-            # original triggers
             if not traded_open and minutes_since_open >= 20:
-                print("triggering trading logic (open)")
+                log.info("triggering trading logic (open)")
                 execute_trading_logic()
                 traded_open = True
 
             if not traded_close and minutes_until_close <= 10:
-                print("triggering trading logic (close)")
+                log.info("triggering trading logic (close)")
                 execute_trading_logic()
                 traded_close = True
 
-            # FORCE run every 5 min
             if (datetime.datetime.now() - last_trade_time).total_seconds() > 300:
                 execute_trading_logic()
                 last_trade_time = datetime.datetime.now()
 
         except Exception as e:
-            print("run_bot error:", e)
+            log.exception("run_bot error: %s", e)
 
         time.sleep(30)
-
 
 def execute_trading_logic():
     summaries = get_stock_summary(TICKERS)
     if not summaries:
-        print("no stock data, skipping")
+        log.warning("no stock data, skipping")
         return
 
     prompt = build_prompt(summaries)
     try:
         signals = ask_deepseek(prompt)
-        print("\nDAILY SHORT-TERM STOCK SIGNALS:")
-        print(signals)
+        log.info("\nDAILY SHORT-TERM STOCK SIGNALS:\n%s", signals)
     except Exception as e:
-        print("error talking to Deepseek:", e)
+        log.exception("error talking to DeepSeek: %s", e)
         return
 
-    # prevent duplicate signals
-    seen = set()
+    # parse signals naively line by line
     for line in signals.splitlines():
-        if ":" not in line:
+        if not line.strip():
             continue
-
-        sym, raw_sig = line.split(":", 1)
-        sym = sym.strip().upper()
-
-        if sym in seen:
-            print(f"duplicate signal ignored for {sym}")
+        parts = line.split(":")
+        if len(parts) < 2:
             continue
-        seen.add(sym)
-
-        sig = raw_sig.split("(")[0].strip().upper()
-        print("parsed signal:", sym, "→", sig)
-
-        place_order(sym, sig)
+        symbol = parts[0].strip()
+        sig = parts[1].strip()
+        place_order(symbol, sig)
 
 # ----- FLASK APP -----
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Giggity Bot Online!"
+    return "Trading bot online — check logs for activity"
 
-@app.route("/trigger")
-def trigger():
-    threading.Thread(target=execute_trading_logic, daemon=True).start()
-    return "Triggered trading logic!"
-
-if __name__ == "__main__":
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        t = threading.Thread(target=run_bot, daemon=True)
-        t.start()
-    port = int(os.getenv("PORT", 5000))
+def start_flask():
+    port = int(os.environ.get("PORT", 5000))
+    log.info("starting flask on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
+# ----- THREADING -----
+threading.Thread(target=run_bot, daemon=True).start()
+threading.Thread(target=start_flask, daemon=True).start()
+
+# keep main alive
+while True:
+    time.sleep(60)
