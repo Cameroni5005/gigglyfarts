@@ -265,33 +265,29 @@ def ask_deepseek(prompt):
         return ""
 
 # ----- TRADING -----
+# ----- TRADING -----
 def place_order(symbol, signal):
     if not api:
         log.warning(f"Alpaca API not initialized — skipping {symbol}")
         return
-        
-for i in range(3):
+
+    # retry getting account info up to 3 times
+    for i in range(3):
+        try:
+            account = api.get_account()
+            log.info(f"{symbol} — Account status: {account.status}, Trading blocked: {account.trading_blocked}, Cash: {account.cash}, Buying power: {account.buying_power}")
+            if account.status != "ACTIVE" or account.trading_blocked:
+                log.info(f"{symbol} — skipping trade due to account status")
+                return
+            break  # success
+        except Exception as e:
+            log.warning(f"{symbol} — Attempt {i+1} to get account info failed: {e}")
+            time.sleep(5)
+    else:
+        log.error(f"{symbol} — Failed to get account info after 3 attempts, skipping trade")
+        return
+
     try:
-        account = api.get_account()
-        log.info(f"{symbol} — Account status: {account.status}, Trading blocked: {account.trading_blocked}, Cash: {account.cash}, Buying power: {account.buying_power}")
-        if account.status != "ACTIVE" or account.trading_blocked:
-            log.info(f"{symbol} — skipping trade due to account status")
-            return
-        break  # success, exit retry loop
-    except Exception as e:
-        log.warning(f"{symbol} — Attempt {i+1} to get account info failed: {e}")
-        time.sleep(5)
-else:
-    log.error(f"{symbol} — Failed to get account info after 3 attempts, skipping trade")
-    return
-
-        
-except Exception as e:
-    log.exception(f"{symbol} — Failed to get account info: {e}")
-    # optionally skip this trade or retry later
-    return
-
-
         signal = signal.upper().strip()
         position_size = 0.0
 
@@ -334,8 +330,10 @@ except Exception as e:
 
         api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
         log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
+
     except Exception as e:
         log.exception(f"place_order fatal error for {symbol}")
+
 
 # ----- BOT LOOP -----
 def execute_trading_logic():
@@ -413,5 +411,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
