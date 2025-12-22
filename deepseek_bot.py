@@ -16,7 +16,7 @@ FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
 ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
-BASE_URL = "https://paper-api.alpaca.markets"
+BASE_URL = "https://paper-api.alpaca.markets/v2"
 
 if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
     raise SystemExit("missing env vars for API keys")
@@ -269,12 +269,27 @@ def place_order(symbol, signal):
     if not api:
         log.warning(f"Alpaca API not initialized — skipping {symbol}")
         return
+for i in range(3):
     try:
         account = api.get_account()
         log.info(f"{symbol} — Account status: {account.status}, Trading blocked: {account.trading_blocked}, Cash: {account.cash}, Buying power: {account.buying_power}")
         if account.status != "ACTIVE" or account.trading_blocked:
             log.info(f"{symbol} — skipping trade due to account status")
             return
+        break  # success, exit retry loop
+    except Exception as e:
+        log.warning(f"{symbol} — Attempt {i+1} to get account info failed: {e}")
+        time.sleep(5)
+else:
+    log.error(f"{symbol} — Failed to get account info after 3 attempts, skipping trade")
+    return
+
+        
+except Exception as e:
+    log.exception(f"{symbol} — Failed to get account info: {e}")
+    # optionally skip this trade or retry later
+    return
+
 
         signal = signal.upper().strip()
         position_size = 0.0
@@ -397,3 +412,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
