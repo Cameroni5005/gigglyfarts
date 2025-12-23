@@ -265,7 +265,6 @@ def ask_deepseek(prompt):
         return ""
 
 # ----- TRADING -----
-# ----- TRADING -----
 def place_order(symbol, signal):
     if not api:
         log.warning(f"Alpaca API not initialized — skipping {symbol}")
@@ -299,9 +298,10 @@ def place_order(symbol, signal):
             try:
                 pos = api.get_position(symbol)
                 qty = int(pos.qty)
+                log.info(f"{symbol} — current position qty={qty}")
                 if qty > 0:
-                    api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
-                    log.info(f"Sold {qty} shares of {symbol}")
+                    order = api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
+                    log.info(f"Sold {qty} shares of {symbol}, order id: {getattr(order,'id', 'unknown')}")
                 else:
                     log.info(f"No position to sell for {symbol}")
             except Exception as e:
@@ -315,8 +315,9 @@ def place_order(symbol, signal):
         intraday = get_intraday_data(symbol)
         price = intraday[-1]["close"] if intraday else 0
         qty = int(position_size // price) if price > 0 else 0
+        log.info(f"{symbol} — computed buy qty={qty}, price={price}, buying power={account.cash}")
         if qty < 1:
-            log.info(f"{symbol} skipped — qty=0 (price {price}, buying power {account.cash})")
+            log.info(f"{symbol} skipped — qty=0")
             return
 
         try:
@@ -328,12 +329,11 @@ def place_order(symbol, signal):
         except Exception as e:
             log.exception(f"{symbol} — failed to get market clock, skipping trade")
 
-        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-        log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
+        order = api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
+        log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}, order id: {getattr(order,'id','unknown')}")
 
     except Exception as e:
         log.exception(f"place_order fatal error for {symbol}")
-
 
 # ----- BOT LOOP -----
 def execute_trading_logic():
@@ -411,6 +411,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
-
-
-
