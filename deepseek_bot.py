@@ -24,14 +24,13 @@ if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
-log.info("=== BOT STARTED ===")
 
-# ---------------- ALPACA API ----------------
+# ---------------- ALPACA ----------------
 api = None
 try:
-    api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL, api_version='v2')  # v2 fixes 404
-    log.info("Connected to Alpaca API (paper trading v2)")
-except Exception as e:
+    api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
+    log.info("Connected to Alpaca API (paper trading)")
+except Exception:
     log.exception("Failed to initialize Alpaca REST client")
 
 # ---------------- STOCK CONFIG ----------------
@@ -51,8 +50,6 @@ SECTORS = {
     "QCOM":"Technology","PEP":"Consumer Staples","KO":"Consumer Staples"
 }
 
-TIMEZONE_OFFSET = -8  # PST
-
 # ---------- CACHE ----------
 CACHE = {"news": {}, "social": {}}
 
@@ -63,7 +60,7 @@ def safe_json(r):
     except ValueError:
         return {}
 
-# ----- NEWS -----
+# ---------- FINNHUB NEWS / SOCIAL ----------
 def fetch_finnhub_news(symbol):
     today = datetime.date.today()
     key = (symbol, today)
@@ -83,7 +80,6 @@ def fetch_finnhub_news(symbol):
     except Exception:
         return "no major news"
 
-# ----- ANALYST -----
 def fetch_finnhub_analyst(symbol):
     try:
         r = requests.get(
@@ -96,7 +92,6 @@ def fetch_finnhub_analyst(symbol):
     except Exception:
         return ""
 
-# ----- SOCIAL -----
 def fetch_finnhub_social(symbol):
     today = datetime.date.today()
     key = (symbol, today)
@@ -120,7 +115,7 @@ def fetch_finnhub_social(symbol):
     except Exception:
         return ""
 
-# ----- PRICE DATA -----
+# ---------- TWELVEDATA ----------
 TWELVE_RATE_LIMIT = 8
 TWELVE_WINDOW = 61
 _twelve_calls = []
@@ -131,12 +126,10 @@ def twelve_rate_limit():
     with _twelve_lock:
         now = time.time()
         _twelve_calls = [t for t in _twelve_calls if now - t < TWELVE_WINDOW]
-
         if len(_twelve_calls) >= TWELVE_RATE_LIMIT:
             sleep_for = TWELVE_WINDOW - (now - _twelve_calls[0]) + 0.1
             log.info(f"TwelveData rate limit hit, sleeping {sleep_for:.1f}s")
             time.sleep(sleep_for)
-
         _twelve_calls.append(time.time())
 
 def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
@@ -159,19 +152,17 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         if not data or "values" not in data:
             log.info(f"{symbol} no valid bars, returning empty list")
             return []
-        bars = [{"time": v.get("datetime"), "close": float(v.get("close", 0)), "volume": float(v.get("volume", 0))} 
-                for v in reversed(data["values"])]
+        bars = [{"time": v.get("datetime"), "close": float(v.get("close",0)), "volume": float(v.get("volume",0))} for v in reversed(data["values"])]
         return bars
-    except Exception as e:
-        log.exception(f"{symbol} bars error: {e}")
+    except Exception:
+        log.exception(f"{symbol} bars error")
         return []
 
 def get_intraday_data(symbol):
     bars = fetch_twelvedata_bars(symbol)
-    if not isinstance(bars, list):
-        return []
-    return bars
+    return bars if isinstance(bars,list) else []
 
+# ---------- TECHNICAL ----------
 def compute_technical(symbol):
     data = get_intraday_data(symbol)
     if not data:
@@ -179,31 +170,32 @@ def compute_technical(symbol):
     closes = [d["close"] for d in data]
     volumes = [d["volume"] for d in data]
 
-    ma5 = round(sum(closes[-5:]) / 5, 2) if len(closes) >= 5 else None
-    ma20 = round(sum(closes[-20:]) / 20, 2) if len(closes) >= 20 else None
+    ma5 = round(sum(closes[-5:])/5,2) if len(closes) >= 5 else None
+    ma20 = round(sum(closes[-20:])/20,2) if len(closes) >= 20 else None
 
+    # RSI
     rsi = None
-    rsi_period = 14
-    if len(closes) > rsi_period:
-        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-        gains = [d if d > 0 else 0 for d in deltas]
-        losses = [-d if d < 0 else 0 for d in deltas]
-        avg_gain = sum(gains[:rsi_period]) / rsi_period
-        avg_loss = sum(losses[:rsi_period]) / rsi_period
-        for g, l in zip(gains[rsi_period:], losses[rsi_period:]):
-            avg_gain = (avg_gain * (rsi_period - 1) + g) / rsi_period
-            avg_loss = (avg_loss * (rsi_period - 1) + l) / rsi_period
-        rsi = 100.0 if avg_loss == 0 else 0.0 if avg_gain == 0 else round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
+    period = 14
+    if len(closes) > period:
+        deltas = [closes[i]-closes[i-1] for i in range(1,len(closes))]
+        gains = [d if d>0 else 0 for d in deltas]
+        losses = [-d if d<0 else 0 for d in deltas]
+        avg_gain = sum(gains[:period])/period
+        avg_loss = sum(losses[:period])/period
+        for g,l in zip(gains[period:], losses[period:]):
+            avg_gain = (avg_gain*(period-1)+g)/period
+            avg_loss = (avg_loss*(period-1)+l)/period
+        rsi = 100 if avg_loss==0 else 0 if avg_gain==0 else round(100-(100/(1+avg_gain/avg_loss)),2)
 
     last = closes[-1]
-    prev = closes[-2] if len(closes) > 1 else last
-    delta = round(last - prev, 2)
-    avg_vol30 = (sum(volumes[-30:]) / 30) if len(volumes) >= 30 else volumes[-1]
-    vol_change = round((volumes[-1] - avg_vol30) / avg_vol30 * 100, 1) if avg_vol30 != 0 else 0
+    prev = closes[-2] if len(closes)>1 else last
+    delta = round(last-prev,2)
+    avg_vol30 = (sum(volumes[-30:])/30) if len(volumes)>=30 else volumes[-1]
+    vol_change = round((volumes[-1]-avg_vol30)/avg_vol30*100,1) if avg_vol30!=0 else 0
 
     return {"price": round(last,2), "change": delta, "ma5": ma5, "ma20": ma20, "rsi": rsi, "volume": volumes[-1], "vol_change": vol_change}
 
-# ----- STOCK SUMMARY -----
+# ---------- STOCK SUMMARY ----------
 def get_stock_summary(tickers):
     summaries = []
     for t in tickers:
@@ -220,17 +212,17 @@ def get_stock_summary(tickers):
                 "ma20": tech["ma20"],
                 "rsi": tech["rsi"],
                 "vol_change": tech["vol_change"],
-                "sector": SECTORS.get(t, ""),
+                "sector": SECTORS.get(t,""),
                 "news": fetch_finnhub_news(t),
                 "analyst": fetch_finnhub_analyst(t),
                 "social": fetch_finnhub_social(t)
             })
             time.sleep(0.05)
-        except Exception as e:
-            log.exception(f"error building summary for {t}: {e}")
+        except Exception:
+            log.exception(f"error building summary for {t}")
     return summaries
 
-# ----- PROMPT -----
+# ---------- DEEPSEEK ----------
 def build_prompt(summaries):
     prompt = (
         "You are a short-term stock trading AI. Calculate a numeric score 0-100 for each stock using these weights:\n"
@@ -244,31 +236,29 @@ def build_prompt(summaries):
     prompt += "\n".join(
         f"{s['symbol']}: price {s['price']}, change {s['change']}, MA5 {s['ma5']}, MA20 {s['ma20']}, "
         f"RSI {s['rsi']}, volume {s['volume']} (Δ{s['vol_change']}%), sector {s['sector']}, "
-        f"analyst {s['analyst']}, social {s['social']}, news: {s['news'] if isinstance(s['news'], str) else 'no major news'}"
+        f"analyst {s['analyst']}, social {s['social']}, news: {s['news'] if isinstance(s['news'],str) else 'no major news'}"
         for s in summaries
     )
     return prompt
 
-# ----- DEEPSEEK -----
 def ask_deepseek(prompt):
     url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": 500}
+    headers = {"Authorization": f"Bearer {API_KEY}","Content-Type":"application/json"}
+    payload = {"model":"deepseek-chat","messages":[{"role":"user","content":prompt}],"temperature":0.2,"max_tokens":500}
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=30)
         r.raise_for_status()
         data = r.json()
-        return data.get("choices", [])[0].get("message", {}).get("content", "") if isinstance(data, dict) else ""
-    except Exception as e:
+        return data.get("choices",[{}])[0].get("message",{}).get("content","") if isinstance(data,dict) else ""
+    except Exception:
         log.exception("error talking to Deepseek")
         return ""
 
-# ----- PLACE ORDER -----
+# ---------- PLACE ORDERS ----------
 def place_order(symbol, signal):
     if not api:
         log.warning(f"Alpaca API not initialized — skipping {symbol}")
         return
-
     try:
         account = api.get_account()
         if account.status != "ACTIVE" or account.trading_blocked:
@@ -277,52 +267,55 @@ def place_order(symbol, signal):
 
         signal = signal.upper().strip()
 
-        # SELL logic
+        # SELL
         if "SELL" in signal:
             try:
                 pos = api.get_position(symbol)
                 qty = int(pos.qty)
-                if qty > 0:
-                    api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
+                if qty>0:
+                    api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
                     log.info(f"sold {qty} shares of {symbol}")
-            except APIError:
-                pass  # no position
+            except Exception:
+                log.exception(f"sell error for {symbol}")
             return
 
-        # BUY logic
+        # BUY
         clock = api.get_clock()
         if not clock.is_open:
+            log.info(f"{symbol} market closed — skipping buy")
             return
 
-        position_size = 0
+        position_size = 0.0
         if "STRONG BUY" in signal:
-            position_size = float(account.cash) * 0.10
-        elif "BUY" in signal:
-            position_size = float(account.cash) * 0.05
+            position_size = float(account.cash)*0.10
+        elif signal.startswith("BUY"):
+            position_size = float(account.cash)*0.05
         else:
             return
 
         intraday = get_intraday_data(symbol)
         price = intraday[-1]["close"] if intraday else 0
-        qty = int(position_size // price) if price > 0 else 0
+        qty = int(position_size//price) if price>0 else 0
 
-        if qty < 1:
-            return
-
-        # check existing position
+        # prevent duplicate buys
         try:
             pos = api.get_position(symbol)
             log.info(f"{symbol} — already holding {pos.qty} shares, skipping buy")
             return
         except APIError:
-            pass  # no position, safe to buy
+            pass
+
+        if qty<1:
+            log.info(f"{symbol} skipped — qty=0")
+            return
 
         order = api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
         log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}, order id: {getattr(order,'id','unknown')}")
-    except Exception:
-        log.exception(f"{symbol} — failed to place order")
 
-# ----- BOT LOGIC -----
+    except Exception:
+        log.exception(f"place_order fatal error for {symbol}")
+
+# ---------- EXECUTE TRADING LOGIC ----------
 def execute_trading_logic():
     summaries = get_stock_summary(TICKERS)
     if not summaries:
@@ -335,30 +328,54 @@ def execute_trading_logic():
     for line in signals.splitlines():
         if ":" not in line:
             continue
-        sym, raw_sig = line.split(":", 1)
+        sym, raw_sig = line.split(":",1)
         sym = sym.strip().upper()
         if sym in seen:
             continue
         seen.add(sym)
         sig = raw_sig.split("(")[0].strip().upper()
+        log.info(f"parsed signal: {sym} → {sig}")
         place_order(sym, sig)
 
-# ----- BOT LOOP -----
+# ---------- BOT LOOP ----------
 def run_bot():
     log.info("bot loop online")
+    last_trade_day = None
+    traded_open = False
+    traded_close = False
+
     while True:
         try:
-            if api:
-                clock = api.get_clock()
-                if getattr(clock, "is_open", False):
+            if not api:
+                time.sleep(60)
+                continue
+            clock = api.get_clock()
+            now = getattr(clock,"timestamp",datetime.datetime.utcnow())
+            if last_trade_day != now.date():
+                traded_open = False
+                traded_close = False
+                last_trade_day = now.date()
+
+            if clock.is_open:
+                # 10 min after open
+                if not traded_open and now >= clock.next_open + datetime.timedelta(minutes=10):
+                    log.info("Running trades 10 minutes after market open")
                     execute_trading_logic()
-                else:
-                    log.info("market closed — sleeping")
+                    traded_open = True
+                # 10 min before close
+                if not traded_close and now >= clock.next_close - datetime.timedelta(minutes=10):
+                    log.info("Running trades 10 minutes before market close")
+                    execute_trading_logic()
+                    traded_close = True
+            else:
+                log.info("market closed — sleeping")
+
         except Exception:
             log.exception("run_bot error")
+
         time.sleep(60)
 
-# ----- FLASK APP -----
+# ---------- FLASK APP ----------
 app = Flask(__name__)
 
 @app.route("/")
@@ -372,6 +389,6 @@ def trigger():
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
