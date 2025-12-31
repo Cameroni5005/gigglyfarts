@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # ---------------- ALPACA ----------------
 api = None
 try:
-    api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
+    api = REST("KEY", "SECRET", "https://paper-api.alpaca.markets", api_version='v2')
     log.info("Connected to Alpaca API (paper trading)")
 except Exception:
     log.exception("Failed to initialize Alpaca REST client")
@@ -392,3 +392,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
