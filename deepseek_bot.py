@@ -16,7 +16,7 @@ FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
 ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
-BASE_URL = "https://paper-api.alpaca.markets/v2"
+BASE_URL = "https://paper-api.alpaca.markets"
 
 if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
     raise SystemExit("missing env vars for API keys")
@@ -290,26 +290,34 @@ def place_order(symbol, signal):
         signal = signal.upper().strip()
         position_size = 0.0
 
-        if "STRONG BUY" in signal:
-            position_size = float(account.cash) * 0.1
-        elif signal == "BUY":
-            position_size = float(account.cash) * 0.05
-        elif "SELL" in signal:
-            try:
-                pos = api.get_position(symbol)
-                qty = int(pos.qty)
-                log.info(f"{symbol} — current position qty={qty}")
-                if qty > 0:
-                    order = api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
-                    log.info(f"Sold {qty} shares of {symbol}, order id: {getattr(order,'id', 'unknown')}")
-                else:
-                    log.info(f"No position to sell for {symbol}")
-            except Exception as e:
-                log.exception(f"Sell error for {symbol}")
-            return
+signal = signal.upper().strip()
+
+if "STRONG BUY" in signal:
+    position_size = float(account.cash) * 0.10
+
+elif signal.startswith("BUY"):
+    position_size = float(account.cash) * 0.05
+
+elif "STRONG SELL" in signal or signal.startswith("SELL"):
+    try:
+        pos = api.get_position(symbol)
+        qty = int(pos.qty)
+        log.info(f"{symbol} — current position qty={qty}")
+        if qty > 0:
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="market",
+                time_in_force="day"
+            )
+            log.info(f"sold {qty} shares of {symbol}")
         else:
-            log.info(f"unknown/hold signal for {symbol}: {signal}")
-            return
+            log.info(f"{symbol} — no position to sell")
+    except Exception:
+        log.exception(f"sell error for {symbol}")
+    return
+
 
         # BUY path
         intraday = get_intraday_data(symbol)
@@ -323,9 +331,9 @@ def place_order(symbol, signal):
         try:
             clock = api.get_clock()
             log.info(f"{symbol} — Market open: {clock.is_open}, Timestamp: {clock.timestamp}")
-            if not getattr(clock, "is_open", False):
-                log.info(f"{symbol} — market closed, skipping trade")
-                return
+            if not clock.is_open:
+                log.info(f"{symbol} market closed but still testing") #change this later when out of testing
+                #return
         except Exception as e:
             log.exception(f"{symbol} — failed to get market clock, skipping trade")
 
@@ -406,8 +414,8 @@ def trigger():
     return "Triggered trading logic!"
 
 if __name__ == "__main__":
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        threading.Thread(target=run_bot, daemon=True).start()
+    threading.Thread(target=run_bot, daemon=True).start()
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
