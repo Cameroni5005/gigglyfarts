@@ -1,12 +1,12 @@
-import requests
-import datetime
+import os
 import time
+import datetime
 import threading
+import logging
+import requests
+from flask import Flask
 from alpaca_trade_api.rest import REST, APIError
 from dotenv import load_dotenv
-from flask import Flask
-import os
-import logging
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -24,11 +24,13 @@ if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET, TWELVEDATA_KEY]):
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+log.info("=== BOT STARTED ===")
 
+# ---------------- ALPACA API ----------------
 api = None
 try:
-    api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL)
-    log.info("Connected to Alpaca API (paper trading)")
+    api = REST(ALPACA_KEY, ALPACA_SECRET, base_url=BASE_URL, api_version='v2')  # v2 fixes 404
+    log.info("Connected to Alpaca API (paper trading v2)")
 except Exception as e:
     log.exception("Failed to initialize Alpaca REST client")
 
@@ -157,11 +159,8 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         if not data or "values" not in data:
             log.info(f"{symbol} no valid bars, returning empty list")
             return []
-        bars = [{
-            "time": v.get("datetime"),
-            "close": float(v.get("close", 0)),
-            "volume": float(v.get("volume", 0))
-        } for v in reversed(data["values"])]
+        bars = [{"time": v.get("datetime"), "close": float(v.get("close", 0)), "volume": float(v.get("volume", 0))} 
+                for v in reversed(data["values"])]
         return bars
     except Exception as e:
         log.exception(f"{symbol} bars error: {e}")
@@ -264,57 +263,41 @@ def ask_deepseek(prompt):
         log.exception("error talking to Deepseek")
         return ""
 
-# ----- TRADING -----
+# ----- PLACE ORDER -----
 def place_order(symbol, signal):
     if not api:
         log.warning(f"Alpaca API not initialized — skipping {symbol}")
         return
 
-    # retry getting account info up to 3 times
-    for i in range(3):
-        try:
-            account = api.get_account()
-            if account.status != "ACTIVE" or account.trading_blocked:
-                log.info(f"{symbol} — skipping trade due to account status")
-                return
-            break
-        except Exception as e:
-            log.warning(f"{symbol} — Attempt {i+1} failed: {e}")
-            time.sleep(5)
-    else:
-        log.error(f"{symbol} — Failed to get account info, skipping trade")
-        return
-
     try:
-        signal = signal.upper().strip()
-        position_size = 0.0
+        account = api.get_account()
+        if account.status != "ACTIVE" or account.trading_blocked:
+            log.info(f"{symbol} — skipping trade due to account status")
+            return
 
-        # SELL first
-        if "STRONG SELL" in signal or signal.startswith("SELL"):
+        signal = signal.upper().strip()
+
+        # SELL logic
+        if "SELL" in signal:
             try:
                 pos = api.get_position(symbol)
                 qty = int(pos.qty)
                 if qty > 0:
-                    api.submit_order(
-                        symbol=symbol,
-                        qty=qty,
-                        side="sell",
-                        type="market",
-                        time_in_force="day"
-                    )
+                    api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
                     log.info(f"sold {qty} shares of {symbol}")
-            except Exception:
-                log.exception(f"sell error for {symbol}")
-            return  # exit after sell
+            except APIError:
+                pass  # no position
+            return
 
-        # BUY only if market is open
+        # BUY logic
         clock = api.get_clock()
         if not clock.is_open:
             return
 
+        position_size = 0
         if "STRONG BUY" in signal:
             position_size = float(account.cash) * 0.10
-        elif signal.startswith("BUY"):
+        elif "BUY" in signal:
             position_size = float(account.cash) * 0.05
         else:
             return
@@ -322,80 +305,24 @@ def place_order(symbol, signal):
         intraday = get_intraday_data(symbol)
         price = intraday[-1]["close"] if intraday else 0
         qty = int(position_size // price) if price > 0 else 0
+
         if qty < 1:
             return
 
-        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-        log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
-
-    except Exception as e:
-        log.exception(f"place_order fatal error for {symbol}")
-
-
-
-        # BUY only if market is open
-        clock = api.get_clock()
-        log.info(f"{symbol} — Market open: {clock.is_open}, Timestamp: {clock.timestamp}")
-        if not clock.is_open:
-            log.info(f"{symbol} market closed — skipping buy")
-            return  # back to normal, don't buy when market is closed
-
-        if "STRONG BUY" in signal:
-            position_size = float(account.cash) * 0.10
-        elif signal.startswith("BUY"):
-            position_size = float(account.cash) * 0.05
-        else:
-            log.info(f"{symbol} — signal not actionable, skipping")
-            return
-
-        intraday = get_intraday_data(symbol)
-        price = intraday[-1]["close"] if intraday else 0
-        qty = int(position_size // price) if price > 0 else 0
-
-        # check if already holding stock to prevent infinite buys
+        # check existing position
         try:
             pos = api.get_position(symbol)
             log.info(f"{symbol} — already holding {pos.qty} shares, skipping buy")
             return
         except APIError:
-            pass  # no position, can buy
-
-        if qty < 1:
-            log.info(f"{symbol} skipped — qty=0")
-            return
+            pass  # no position, safe to buy
 
         order = api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
         log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}, order id: {getattr(order,'id','unknown')}")
+    except Exception:
+        log.exception(f"{symbol} — failed to place order")
 
-    except Exception as e:
-        log.exception(f"place_order fatal error for {symbol}")
-
-
-        # BUY path
-        intraday = get_intraday_data(symbol)
-        price = intraday[-1]["close"] if intraday else 0
-        qty = int(position_size // price) if price > 0 else 0
-        log.info(f"{symbol} — computed buy qty={qty}, price={price}, buying power={account.cash}")
-        if qty < 1:
-            log.info(f"{symbol} skipped — qty=0")
-            return
-
-        try:
-            clock = api.get_clock()
-            log.info(f"{symbol} — Market open: {clock.is_open}, Timestamp: {clock.timestamp}")
-            if not clock.is_open:
-                log.info(f"{symbol} market closed but still testing") #change this later when out of testing
-                #return
-        except Exception as e:
-            log.exception(f"{symbol} — failed to get market clock, skipping trade")
-
-        order = api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-        log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}, order id: {getattr(order,'id','unknown')}")
-
-    except Exception as e:
-        log.exception(f"place_order fatal error for {symbol}")
-
-# ----- BOT LOOP -----
+# ----- BOT LOGIC -----
 def execute_trading_logic():
     summaries = get_stock_summary(TICKERS)
     if not summaries:
@@ -411,56 +338,25 @@ def execute_trading_logic():
         sym, raw_sig = line.split(":", 1)
         sym = sym.strip().upper()
         if sym in seen:
-            log.info(f"duplicate signal ignored for {sym}")
             continue
         seen.add(sym)
         sig = raw_sig.split("(")[0].strip().upper()
-        log.info(f"parsed signal: {sym} → {sig}")
         place_order(sym, sig)
 
 # ----- BOT LOOP -----
 def run_bot():
     log.info("bot loop online")
-    last_trade_day = None
-    traded_open = False
-    traded_close = False
-
     while True:
         try:
-            if not api:
-                time.sleep(60)
-                continue
-
-            clock = api.get_clock()
-            now = getattr(clock, "timestamp", datetime.datetime.utcnow())
-
-            # reset flags on new trading day
-            if last_trade_day != now.date():
-                traded_open = False
-                traded_close = False
-                last_trade_day = now.date()
-
-            if clock.is_open:
-                # 10 min after open
-                if not traded_open and now >= clock.next_open - datetime.timedelta(days=0) + datetime.timedelta(minutes=10):
-                    log.info("Running trades 10 minutes after market open")
+            if api:
+                clock = api.get_clock()
+                if getattr(clock, "is_open", False):
                     execute_trading_logic()
-                    traded_open = True
-                # 10 min before close
-                if not traded_close and now >= clock.next_close - datetime.timedelta(minutes=10):
-                    log.info("Running trades 10 minutes before market close")
-                    execute_trading_logic()
-                    traded_close = True
-            else:
-                log.info("market closed — sleeping")
-
-        except Exception as e:
+                else:
+                    log.info("market closed — sleeping")
+        except Exception:
             log.exception("run_bot error")
-
-        time.sleep(30)
-
-
-
+        time.sleep(60)
 
 # ----- FLASK APP -----
 app = Flask(__name__)
@@ -479,8 +375,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
