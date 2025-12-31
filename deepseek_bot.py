@@ -401,35 +401,45 @@ def run_bot():
     last_trade_day = None
     traded_open = False
     traded_close = False
-    last_trade_time = datetime.datetime.min
+
     while True:
         try:
             if not api:
                 log.warning("Alpaca API not initialized — sleeping")
                 time.sleep(60)
                 continue
+
             clock = api.get_clock()
             now = getattr(clock, "timestamp", datetime.datetime.utcnow())
             log.info(f"bot alive: {now}, market open: {getattr(clock,'is_open', False)}")
 
+            # reset flags on new trading day
             if last_trade_day != now.date():
                 traded_open = False
                 traded_close = False
                 last_trade_day = now.date()
 
-            if not getattr(clock,'is_open', False):
+            if getattr(clock,'is_open', False):
+                open_time = clock.next_open - datetime.timedelta(days=1)  # previous open
+                close_time = clock.next_close - datetime.timedelta(days=1)  # today close
+                # 10 min after open
+                if not traded_open and now >= open_time + datetime.timedelta(minutes=10):
+                    log.info("Running trades 10 minutes after market open")
+                    execute_trading_logic()
+                    traded_open = True
+                # 10 min before close
+                if not traded_close and now >= close_time - datetime.timedelta(minutes=10):
+                    log.info("Running trades 10 minutes before market close")
+                    execute_trading_logic()
+                    traded_close = True
+            else:
                 log.info("market closed — sleeping")
-                time.sleep(60)
-                continue
-
-            # FORCE run every 5 min
-            if (datetime.datetime.now() - last_trade_time).total_seconds() > 300:
-                execute_trading_logic()
-                last_trade_time = datetime.datetime.now()
 
         except Exception as e:
             log.exception("run_bot error")
+
         time.sleep(30)
+
 
 # ----- FLASK APP -----
 app = Flask(__name__)
@@ -448,5 +458,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
