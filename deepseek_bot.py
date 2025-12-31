@@ -279,17 +279,17 @@ def place_order(symbol, signal):
                 return
             break
         except Exception as e:
-            log.warning(f"{symbol} — Attempt {i+1} to get account info failed: {e}")
+            log.warning(f"{symbol} — Attempt {i+1} failed: {e}")
             time.sleep(5)
     else:
-        log.error(f"{symbol} — Failed to get account info after 3 attempts, skipping trade")
+        log.error(f"{symbol} — Failed to get account info, skipping trade")
         return
 
     try:
         signal = signal.upper().strip()
         position_size = 0.0
 
-        # SELL / LIQUIDATE first
+        # SELL first
         if "STRONG SELL" in signal or signal.startswith("SELL"):
             try:
                 pos = api.get_position(symbol)
@@ -303,8 +303,6 @@ def place_order(symbol, signal):
                         time_in_force="day"
                     )
                     log.info(f"sold {qty} shares of {symbol}")
-                else:
-                    log.info(f"{symbol} — no position to sell")
             except Exception:
                 log.exception(f"sell error for {symbol}")
             return  # exit after sell
@@ -312,7 +310,6 @@ def place_order(symbol, signal):
         # BUY only if market is open
         clock = api.get_clock()
         if not clock.is_open:
-            log.info(f"{symbol} market closed — skipping buy")
             return
 
         if "STRONG BUY" in signal:
@@ -320,36 +317,20 @@ def place_order(symbol, signal):
         elif signal.startswith("BUY"):
             position_size = float(account.cash) * 0.05
         else:
-            log.info(f"{symbol} — signal not actionable, skipping")
             return
 
         intraday = get_intraday_data(symbol)
         price = intraday[-1]["close"] if intraday else 0
         qty = int(position_size // price) if price > 0 else 0
-
-        # avoid buying if already holding
-        try:
-            pos = api.get_position(symbol)
-            log.info(f"{symbol} — already holding {pos.qty} shares, skipping buy")
-            return
-        except APIError:
-            pass  # no position, can buy
-
         if qty < 1:
-            log.info(f"{symbol} skipped — qty=0")
             return
 
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side='buy',
-            type='market',
-            time_in_force='day'
-        )
+        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
         log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}")
 
     except Exception as e:
         log.exception(f"place_order fatal error for {symbol}")
+
 
 
         # BUY only if market is open
@@ -437,6 +418,7 @@ def execute_trading_logic():
         log.info(f"parsed signal: {sym} → {sig}")
         place_order(sym, sig)
 
+# ----- BOT LOOP -----
 def run_bot():
     log.info("bot loop online")
     last_trade_day = None
@@ -446,12 +428,11 @@ def run_bot():
     while True:
         try:
             if not api:
-                log.warning("Alpaca API not initialized — sleeping")
                 time.sleep(60)
                 continue
 
             clock = api.get_clock()
-            now = clock.timestamp
+            now = getattr(clock, "timestamp", datetime.datetime.utcnow())
 
             # reset flags on new trading day
             if last_trade_day != now.date():
@@ -459,14 +440,13 @@ def run_bot():
                 traded_close = False
                 last_trade_day = now.date()
 
-            if getattr(clock, 'is_open', False):
-                # 10 min after market open
-                if not traded_open and now >= clock.next_open - datetime.timedelta(minutes=0) + datetime.timedelta(minutes=10):
+            if clock.is_open:
+                # 10 min after open
+                if not traded_open and now >= clock.next_open - datetime.timedelta(days=0) + datetime.timedelta(minutes=10):
                     log.info("Running trades 10 minutes after market open")
                     execute_trading_logic()
                     traded_open = True
-
-                # 10 min before market close
+                # 10 min before close
                 if not traded_close and now >= clock.next_close - datetime.timedelta(minutes=10):
                     log.info("Running trades 10 minutes before market close")
                     execute_trading_logic()
@@ -478,6 +458,7 @@ def run_bot():
             log.exception("run_bot error")
 
         time.sleep(30)
+
 
 
 
@@ -498,6 +479,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
