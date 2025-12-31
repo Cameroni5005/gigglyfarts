@@ -290,33 +290,63 @@ def place_order(symbol, signal):
         signal = signal.upper().strip()
         position_size = 0.0
 
-signal = signal.upper().strip()
+        # SELL / LIQUIDATE first
+        if "STRONG SELL" in signal or signal.startswith("SELL"):
+            try:
+                pos = api.get_position(symbol)
+                qty = int(pos.qty)
+                log.info(f"{symbol} — current position qty={qty}")
+                if qty > 0:
+                    order = api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="sell",
+                        type="market",
+                        time_in_force="day"
+                    )
+                    log.info(f"sold {qty} shares of {symbol}")
+                else:
+                    log.info(f"{symbol} — no position to sell")
+            except Exception:
+                log.exception(f"sell error for {symbol}")
+            return  # exit after sell
 
-if "STRONG BUY" in signal:
-    position_size = float(account.cash) * 0.10
+        # BUY only if market is open
+        clock = api.get_clock()
+        log.info(f"{symbol} — Market open: {clock.is_open}, Timestamp: {clock.timestamp}")
+        if not clock.is_open:
+            log.info(f"{symbol} market closed — skipping buy")
+            return  # back to normal, don't buy when market is closed
 
-elif signal.startswith("BUY"):
-    position_size = float(account.cash) * 0.05
-
-elif "STRONG SELL" in signal or signal.startswith("SELL"):
-    try:
-        pos = api.get_position(symbol)
-        qty = int(pos.qty)
-        log.info(f"{symbol} — current position qty={qty}")
-        if qty > 0:
-            order = api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side="sell",
-                type="market",
-                time_in_force="day"
-            )
-            log.info(f"sold {qty} shares of {symbol}")
+        if "STRONG BUY" in signal:
+            position_size = float(account.cash) * 0.10
+        elif signal.startswith("BUY"):
+            position_size = float(account.cash) * 0.05
         else:
-            log.info(f"{symbol} — no position to sell")
-    except Exception:
-        log.exception(f"sell error for {symbol}")
-    return
+            log.info(f"{symbol} — signal not actionable, skipping")
+            return
+
+        intraday = get_intraday_data(symbol)
+        price = intraday[-1]["close"] if intraday else 0
+        qty = int(position_size // price) if price > 0 else 0
+
+        # check if already holding stock to prevent infinite buys
+        try:
+            pos = api.get_position(symbol)
+            log.info(f"{symbol} — already holding {pos.qty} shares, skipping buy")
+            return
+        except APIError:
+            pass  # no position, can buy
+
+        if qty < 1:
+            log.info(f"{symbol} skipped — qty=0")
+            return
+
+        order = api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
+        log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}, order id: {getattr(order,'id','unknown')}")
+
+    except Exception as e:
+        log.exception(f"place_order fatal error for {symbol}")
 
 
         # BUY path
@@ -418,4 +448,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
