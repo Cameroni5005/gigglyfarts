@@ -388,12 +388,12 @@ def run_bot():
 
             if clock.is_open:
                 # 10 min after open fixed using calendar
-                if not traded_open and now >= parser.isoparse(api.get_calendar(start=now.date().isoformat(), end=now.date().isoformat())[0].open) + datetime.timedelta(minutes=10):
-                    log.info("Running trades 10 minutes after market open")
+                if not traded_open and now >= market_open + datetime.timedelta(minutes=10):
+                    log.info("running trades 10 minutes after open")
                     execute_trading_logic()
                     traded_open = True
                 # 10 min before close
-                if not traded_close and now >= clock.next_close - datetime.timedelta(minutes=10):
+                if not traded_close and now >= market_close - datetime.timedelta(minutes=10):
                     log.info("Running trades 10 minutes before market close")
                     execute_trading_logic()
                     traded_close = True
