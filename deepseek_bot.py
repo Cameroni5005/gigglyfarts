@@ -393,9 +393,11 @@ def run_bot():
                 # fetch today's market open/close from calendar
                 cal = api.get_calendar(start=now.date().isoformat(), end=now.date().isoformat())
                 if cal:
-                    market_open = cal[0].open.astimezone(timezone.utc)
-                    market_close = cal[0].close.astimezone(timezone.utc)
+                    market_open = datetime.combine(now.date(), cal[0].open, tzinfo=timezone(timedelta(hours=-5)))  # EST
+                    market_open = market_open.astimezone(timezone.utc)
 
+                    market_close = datetime.combine(now.date(), cal[0].close, tzinfo=timezone(timedelta(hours=-5)))  # EST
+                    market_close = market_close.astimezone(timezone.utc)
                     # 10 min after open
                     if not traded_open and now >= market_open + datetime.timedelta(minutes=10):
                         log.info("running trades 10 minutes after open")
@@ -433,5 +435,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
