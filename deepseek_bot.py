@@ -379,7 +379,8 @@ def run_bot():
                 time.sleep(60)
                 continue
             clock = api.get_clock()
-            now = getattr(clock,"timestamp",datetime.datetime.utcnow())
+            now = clock.timestamp.astimezone(timezone.utc)
+            log.info(f"utc_now={now}, is_open={clock.is_open}, next_open={clock.next_open}")
             if last_trade_day != now.date():
                 traded_open = False
                 traded_close = False
@@ -421,3 +422,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
