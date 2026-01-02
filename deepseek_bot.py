@@ -3,10 +3,13 @@ import time
 import datetime
 import threading
 import logging
+import random
 import requests
 from flask import Flask
 from alpaca_trade_api.rest import REST, APIError
 from dotenv import load_dotenv
+from dateutil import parser
+from datetime import timezone
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -32,6 +35,9 @@ try:
     log.info("Connected to Alpaca API (paper trading)")
 except Exception:
     log.exception("Failed to initialize Alpaca REST client")
+
+# ---------------- GLOBAL LOCK ----------------
+trade_lock = threading.Lock()
 
 # ---------------- STOCK CONFIG ----------------
 TICKERS = [
@@ -152,7 +158,7 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         if not data or "values" not in data:
             log.info(f"{symbol} no valid bars, returning empty list")
             return []
-        bars = [{"time": v.get("datetime"), "close": float(v.get("close",0)), "volume": float(v.get("volume",0))} for v in reversed(data["values"])]
+        bars = [{"time": v.get("datetime"), "close": float(v.get("close",0)), "high": float(v.get("high",0)), "low": float(v.get("low",0)), "volume": float(v.get("volume",0))} for v in reversed(data["values"])]
         return bars
     except Exception:
         log.exception(f"{symbol} bars error")
@@ -193,7 +199,19 @@ def compute_technical(symbol):
     avg_vol30 = (sum(volumes[-30:])/30) if len(volumes)>=30 else volumes[-1]
     vol_change = round((volumes[-1]-avg_vol30)/avg_vol30*100,1) if avg_vol30!=0 else 0
 
-    return {"price": round(last,2), "change": delta, "ma5": ma5, "ma20": ma20, "rsi": rsi, "volume": volumes[-1], "vol_change": vol_change}
+    # ATR for risk-based sizing
+    atr = None
+    if len(data)>1:
+        tr_list = []
+        for i in range(1,len(data)):
+            h = data[i]['high']
+            l = data[i]['low']
+            pc = data[i-1]['close']
+            tr = max(h-l, abs(h-pc), abs(l-pc))
+            tr_list.append(tr)
+        atr = sum(tr_list[-14:])/14 if len(tr_list)>=14 else tr_list[-1]
+
+    return {"price": round(last,2), "change": delta, "ma5": ma5, "ma20": ma20, "rsi": rsi, "volume": volumes[-1], "vol_change": vol_change, "atr": atr}
 
 # ---------- STOCK SUMMARY ----------
 def get_stock_summary(tickers):
@@ -206,6 +224,7 @@ def get_stock_summary(tickers):
             summaries.append({
                 "symbol": t,
                 "price": tech["price"],
+                "atr": tech["atr"],
                 "change": tech["change"],
                 "volume": tech["volume"],
                 "ma5": tech["ma5"],
@@ -259,61 +278,71 @@ def place_order(symbol, signal):
     if not api:
         log.warning(f"Alpaca API not initialized — skipping {symbol}")
         return
-    try:
-        account = api.get_account()
-        if account.status != "ACTIVE" or account.trading_blocked:
-            log.info(f"{symbol} — skipping trade due to account status")
-            return
+    with trade_lock:
+        try:
+            account = api.get_account()
+            if account.status != "ACTIVE" or account.trading_blocked:
+                log.info(f"{symbol} — skipping trade due to account status")
+                return
 
-        signal = signal.upper().strip()
+            signal = signal.upper().strip()
 
-        # SELL
-        if "SELL" in signal:
+            # SELL
+            if "SELL" in signal:
+                try:
+                    pos = api.get_position(symbol)
+                    qty = int(pos.qty)
+                    if qty>0:
+                        api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
+                        log.info(f"sold {qty} shares of {symbol}")
+                except Exception:
+                    log.exception(f"sell error for {symbol}")
+                return
+
+            # BUY
+            clock = api.get_clock()
+            if not clock.is_open:
+                log.info(f"{symbol} market closed — skipping buy")
+                return
+
+            intraday = get_intraday_data(symbol)
+            tech = compute_technical(symbol)
+            if not tech or not tech['atr']:
+                return
+            price = intraday[-1]["close"] if intraday else 0
+
+            # risk-based qty
+            risk_dollars = float(account.equity)*0.01
+            qty = int(risk_dollars // tech['atr'])
+            if qty < 1:
+                log.info(f"{symbol} skipped — qty=0")
+                return
+
+            # prevent duplicate buys
             try:
                 pos = api.get_position(symbol)
-                qty = int(pos.qty)
-                if qty>0:
-                    api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
-                    log.info(f"sold {qty} shares of {symbol}")
-            except Exception:
-                log.exception(f"sell error for {symbol}")
-            return
+                log.info(f"{symbol} — already holding {pos.qty} shares, skipping buy")
+                return
+            except APIError:
+                pass
 
-        # BUY
-        clock = api.get_clock()
-        if not clock.is_open:
-            log.info(f"{symbol} market closed — skipping buy")
-            return
-
-        position_size = 0.0
-        if "STRONG BUY" in signal:
-            position_size = float(account.cash)*0.10
-        elif signal.startswith("BUY"):
-            position_size = float(account.cash)*0.05
-        else:
-            return
-
-        intraday = get_intraday_data(symbol)
-        price = intraday[-1]["close"] if intraday else 0
-        qty = int(position_size//price) if price>0 else 0
-
-        # prevent duplicate buys
-        try:
-            pos = api.get_position(symbol)
-            log.info(f"{symbol} — already holding {pos.qty} shares, skipping buy")
-            return
-        except APIError:
-            pass
-
-        if qty<1:
-            log.info(f"{symbol} skipped — qty=0")
-            return
-
-        order = api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-        log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}, order id: {getattr(order,'id','unknown')}")
-
-    except Exception:
-        log.exception(f"place_order fatal error for {symbol}")
+            # bracket order
+            stop_price = round(price - tech['atr'],2)
+            take_price = round(price + tech['atr']*2,2)
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side='buy',
+                type='limit',
+                limit_price=price,
+                time_in_force='day',
+                order_class='bracket',
+                take_profit={'limit_price':take_price},
+                stop_loss={'stop_price':stop_price}
+            )
+            log.info(f"BOUGHT {qty} shares of {symbol} @ ~{price}, stop {stop_price}, take {take_price}, order id: {getattr(order,'id','unknown')}")
+        except Exception:
+            log.exception(f"place_order fatal error for {symbol}")
 
 # ---------- EXECUTE TRADING LOGIC ----------
 def execute_trading_logic():
@@ -357,8 +386,8 @@ def run_bot():
                 last_trade_day = now.date()
 
             if clock.is_open:
-                # 10 min after open
-                if not traded_open and now >= clock.next_open + datetime.timedelta(minutes=10):
+                # 10 min after open fixed using calendar
+                if not traded_open and now >= parser.isoparse(api.get_calendar(start=now.date().isoformat(), end=now.date().isoformat())[0].open) + datetime.timedelta(minutes=10):
                     log.info("Running trades 10 minutes after market open")
                     execute_trading_logic()
                     traded_open = True
@@ -392,5 +421,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
-
-
