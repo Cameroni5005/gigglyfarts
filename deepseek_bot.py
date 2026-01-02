@@ -1,6 +1,5 @@
 import os
 import time
-import datetime
 import threading
 import logging
 import random
@@ -398,14 +397,15 @@ def run_bot():
 
                     market_close = datetime.combine(now.date(), cal[0].close, tzinfo=timezone(timedelta(hours=-5)))  # EST
                     market_close = market_close.astimezone(timezone.utc)
+
                     # 10 min after open
-                    if not traded_open and now >= market_open + datetime.timedelta(minutes=10):
+                    if not traded_open and now >= market_open + timedelta(minutes=10):
                         log.info("running trades 10 minutes after open")
                         execute_trading_logic()
                         traded_open = True
 
                     # 10 min before close
-                    if not traded_close and now >= market_close - datetime.timedelta(minutes=10):
+                    if not traded_close and now >= market_close - timedelta(minutes=10):
                         log.info("running trades 10 minutes before market close")
                         execute_trading_logic()
                         traded_close = True
@@ -416,6 +416,7 @@ def run_bot():
             log.exception("run_bot error")
 
         time.sleep(60)
+
 
 
 # ---------- FLASK APP ----------
@@ -435,6 +436,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
