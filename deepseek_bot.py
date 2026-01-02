@@ -378,25 +378,35 @@ def run_bot():
             if not api:
                 time.sleep(60)
                 continue
+
             clock = api.get_clock()
             now = clock.timestamp.astimezone(timezone.utc)
             log.info(f"utc_now={now}, is_open={clock.is_open}, next_open={clock.next_open}")
+
+            # reset traded flags on new day
             if last_trade_day != now.date():
                 traded_open = False
                 traded_close = False
                 last_trade_day = now.date()
 
             if clock.is_open:
-                # 10 min after open fixed using calendar
-                if not traded_open and now >= market_open + datetime.timedelta(minutes=10):
-                    log.info("running trades 10 minutes after open")
-                    execute_trading_logic()
-                    traded_open = True
-                # 10 min before close
-                if not traded_close and now >= market_close - datetime.timedelta(minutes=10):
-                    log.info("Running trades 10 minutes before market close")
-                    execute_trading_logic()
-                    traded_close = True
+                # fetch today's market open/close from calendar
+                cal = api.get_calendar(start=now.date().isoformat(), end=now.date().isoformat())
+                if cal:
+                    market_open = cal[0].open.astimezone(timezone.utc)
+                    market_close = cal[0].close.astimezone(timezone.utc)
+
+                    # 10 min after open
+                    if not traded_open and now >= market_open + datetime.timedelta(minutes=10):
+                        log.info("running trades 10 minutes after open")
+                        execute_trading_logic()
+                        traded_open = True
+
+                    # 10 min before close
+                    if not traded_close and now >= market_close - datetime.timedelta(minutes=10):
+                        log.info("running trades 10 minutes before market close")
+                        execute_trading_logic()
+                        traded_close = True
             else:
                 log.info("market closed — sleeping")
 
@@ -404,6 +414,7 @@ def run_bot():
             log.exception("run_bot error")
 
         time.sleep(60)
+
 
 # ---------- FLASK APP ----------
 app = Flask(__name__)
@@ -422,4 +433,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
