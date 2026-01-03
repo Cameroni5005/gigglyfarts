@@ -57,8 +57,8 @@ def fetch_math_summaries():
         }, ...
     ]
     """
-    import math_script  # assume the previous math script saved as math_script.py
-    return math_script.get_all_summaries(TICKERS)
+    import math_bot  # assume the previous math script saved as math_bot.py
+    return math_bot.get_all_summaries(TICKERS)
 
 # ---------------- DEEPSEEK PROMPT ----------------
 def build_prompt(summaries):
@@ -180,3 +180,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
