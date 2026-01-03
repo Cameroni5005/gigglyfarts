@@ -365,17 +365,20 @@ def execute_trading_logic():
     if not summaries:
         log.info("no stock data, skipping")
         return
+
     prompt = build_prompt(summaries)
     signals = ask_deepseek(prompt)
+
     if not signals or not signals.strip():
-    log.warning("DeepSeek returned empty or invalid response")
-    return
+        log.warning("DeepSeek returned empty or invalid response")
+        return
+
     log.info("\nDAILY SHORT-TERM STOCK SIGNALS:\n%s", signals)
     seen = set()
     for line in signals.splitlines():
         if ":" not in line:
             continue
-        sym, raw_sig = line.split(":",1)
+        sym, raw_sig = line.split(":", 1)
         sym = sym.strip().upper()
         if sym in seen:
             continue
@@ -383,6 +386,7 @@ def execute_trading_logic():
         sig = raw_sig.split("(")[0].strip().upper()
         log.info(f"parsed signal: {sym} → {sig}")
         place_order(sym, sig)
+
 
 
 # ---------- BOT LOOP ----------
@@ -454,4 +458,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
