@@ -41,11 +41,10 @@ TICKERS = [
 ]
 
 # ---------------- FETCH MATH SCRIPT OUTPUT ----------------
-# this function should be replaced with actual import from math script
-# or call math script as module and get get_all_summaries
 def fetch_math_summaries():
     """
-    expected output: list of dicts:
+    expects math_bot.py to be in same folder
+    returns list of dicts:
     [
         {
             "symbol": "AAPL",
@@ -57,19 +56,15 @@ def fetch_math_summaries():
         }, ...
     ]
     """
-    import math_bot  # assume the previous math script saved as math_bot.py
+    import math_bot
     return math_bot.get_all_summaries(TICKERS)
 
 # ---------------- DEEPSEEK PROMPT ----------------
 def build_prompt(summaries):
     prompt = (
-        "You are a short-term stock trading AI. Calculate a numeric score 0-100 for each stock using these weights:\n"
-        "- Math score: 40%\n"
-        "- News/catalysts: 20%\n"
-        "- Social sentiment: 20%\n"
-        "- Analyst/fundamentals: 20%\n\n"
-        "Score based on math score, recent news (last 3 days), social sentiment, and analyst ratings.\n"
-        "Normalize all inputs to 0-100. Output format: SYMBOL: RECOMMENDATION (1-2 word note if relevant). Include confidence HIGH/MEDIUM/LOW. Do NOT include numeric scores.\n\n"
+        "You are a short-term stock trading AI. For each stock, give a single recommendation: STRONG BUY, BUY, HOLD, SELL, or STRONG SELL.\n"
+        "Do not include numeric scores, confidence, or extra descriptors.\n"
+        "Score based on math score (40%), news (20%), social sentiment (20%), analyst/fundamentals (20%).\n\n"
     )
     for s in summaries:
         prompt += (f"{s['symbol']}, math_score {s['math_score']:.1f}, sector {s['sector']}, "
@@ -78,7 +73,7 @@ def build_prompt(summaries):
 
 def ask_deepseek(prompt):
     url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {API_KEY}","Content-Type":"application/json"}
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type":"application/json"}
     payload = {
         "model":"deepseek-chat",
         "messages":[{"role":"user","content":prompt}],
@@ -134,7 +129,7 @@ def execute_trading_logic():
         log.warning("DeepSeek returned empty or invalid response")
         return
 
-    log.info("\nDAILY AI STOCK SIGNALS:\n%s", signals)
+    log.info("DAILY AI STOCK SIGNALS:\n%s", signals)
     seen = set()
     for line in signals.splitlines():
         if ":" not in line:
@@ -144,7 +139,9 @@ def execute_trading_logic():
         if sym in seen:
             continue
         seen.add(sym)
-        sig = raw_sig.split("(")[0].strip().upper()
+        sig = raw_sig.strip().upper()  # only the recommendation
+        if sig not in ["STRONG BUY","BUY","HOLD","SELL","STRONG SELL"]:
+            sig = "HOLD"
         log.info(f"parsed AI signal: {sym} → {sig}")
         place_order(sym, sig)
 
@@ -180,4 +177,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
-
