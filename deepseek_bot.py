@@ -8,9 +8,8 @@ from flask import Flask
 from alpaca_trade_api.rest import REST, APIError
 from dotenv import load_dotenv
 from dateutil import parser
-import datetime       # keep the module
-from datetime import timezone, timedelta  # just these two
-
+import datetime
+from datetime import timezone, timedelta
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -242,16 +241,18 @@ def get_stock_summary(tickers):
             log.exception(f"error building summary for {t}")
     return summaries
 
-# ---------- DEEPSEEK ----------
+# ---------- DEEPSEEK PROMPT ----------
 def build_prompt(summaries):
     prompt = (
         "You are a short-term stock trading AI. Calculate a numeric score 0-100 for each stock using these weights:\n"
-        "- News/catalysts: 40%\n- Technical indicators (RSI, MA, volume): 35%\n"
-        "- Social sentiment: 15%\n- Sector/macro context: 7%\n- Fundamentals: 3%\n\n"
+        "- News/catalysts: 20%\n"
+        "- Technical indicators (RSI, MA, volume): 25%\n"
+        "- Social sentiment: 4%\n"
+        "- Sector/macro context: 7%\n"
+        "- Fundamentals: 15%\n\n"
         "Score based on last 3 months of price data, recent news (last 3 days), social sentiment, and sector/macro trends.\n"
-        "Use the score to assign recommendation:\n"
-        "80-100 → STRONG BUY\n65-79 → BUY\n45-64 → HOLD\n30-44 → SELL\n0-29 → STRONG SELL\n\n"
-        "Output format: SYMBOL: RECOMMENDATION (1-2 word note if relevant). Do NOT include numeric scores in the output.\n\n"
+        "Normalize all inputs to 0-100. Apply recency weighting: last 48 hours = 2x older data. Penalize scores for high volatility (ATR) or low liquidity. Boost weights conditionally if news/sentiment is extremely strong.\n"
+        "Output format: SYMBOL: RECOMMENDATION (1-2 word note if relevant). Include confidence HIGH/MEDIUM/LOW. Do NOT include numeric scores in the output.\n\n"
     )
     prompt += "\n".join(
         f"{s['symbol']}: price {s['price']}, change {s['change']}, MA5 {s['ma5']}, MA20 {s['ma20']}, "
@@ -394,10 +395,10 @@ def run_bot():
                 # fetch today's market open/close from calendar
                 cal = api.get_calendar(start=now.date().isoformat(), end=now.date().isoformat())
                 if cal:
-                    market_open = datetime.combine(now.date(), cal[0].open, tzinfo=timezone(timedelta(hours=-5)))  # EST
+                    market_open = datetime.combine(now.date(), cal[0].open, tzinfo=timezone(timedelta(hours=-5)))
                     market_open = market_open.astimezone(timezone.utc)
 
-                    market_close = datetime.combine(now.date(), cal[0].close, tzinfo=timezone(timedelta(hours=-5)))  # EST
+                    market_close = datetime.combine(now.date(), cal[0].close, tzinfo=timezone(timedelta(hours=-5)))
                     market_close = market_close.astimezone(timezone.utc)
 
                     # 10 min after open
@@ -419,8 +420,6 @@ def run_bot():
 
         time.sleep(60)
 
-
-
 # ---------- FLASK APP ----------
 app = Flask(__name__)
 
@@ -438,9 +437,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
