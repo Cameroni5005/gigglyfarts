@@ -2,4 +2,4 @@ flask==2.3.2
 alpaca-trade-api==3.0.0
 requests==2.31.0
 python-dotenv==1.0.0
-python-dateutil==2.9.2
+python-dateutil==2.9.0
