@@ -220,7 +220,9 @@ def get_stock_summary(tickers):
         try:
             tech = compute_technical(t)
             if not tech:
+                log.warning(f"{t} skipped — no technical data")
                 continue
+
             summaries.append({
                 "symbol": t,
                 "price": tech["price"],
@@ -236,10 +238,14 @@ def get_stock_summary(tickers):
                 "analyst": fetch_finnhub_analyst(t),
                 "social": fetch_finnhub_social(t)
             })
+
             time.sleep(0.05)
+
         except Exception:
             log.exception(f"error building summary for {t}")
+
     return summaries
+
 
 # ---------- DEEPSEEK PROMPT ----------
 def build_prompt(summaries):
@@ -348,12 +354,22 @@ def place_order(symbol, signal):
 
 # ---------- EXECUTE TRADING LOGIC ----------
 def execute_trading_logic():
+    log.info("execute_trading_logic() STARTED")
+
+    clock = api.get_clock()
+    if not clock.is_open:
+        log.info("market closed — aborting manual trigger")
+        return
+
     summaries = get_stock_summary(TICKERS)
     if not summaries:
         log.info("no stock data, skipping")
         return
     prompt = build_prompt(summaries)
     signals = ask_deepseek(prompt)
+    if not signals or not signals.strip():
+    log.warning("DeepSeek returned empty or invalid response")
+    return
     log.info("\nDAILY SHORT-TERM STOCK SIGNALS:\n%s", signals)
     seen = set()
     for line in signals.splitlines():
@@ -367,6 +383,7 @@ def execute_trading_logic():
         sig = raw_sig.split("(")[0].strip().upper()
         log.info(f"parsed signal: {sym} → {sig}")
         place_order(sym, sig)
+
 
 # ---------- BOT LOOP ----------
 def run_bot():
@@ -437,3 +454,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
