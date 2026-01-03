@@ -63,14 +63,13 @@ def safe_json(r):
         return {}
 
 # ---------- FINNHUB NEWS / SOCIAL ----------
-def fetch_finnhub_news(symbol):
-    today = date.today()
-    yesterday = today - timedelta(days=3)
 
+def fetch_finnhub_news(symbol):
+    today = datetime.today().date()
+    yesterday = today - timedelta(days=3)
     key = (symbol, today)
     if key in CACHE['news']:
         return CACHE['news'][key]
-    
     try:
         r = requests.get(
             f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={yesterday}&to={today}&token={FINNHUB_KEY}",
@@ -83,6 +82,7 @@ def fetch_finnhub_news(symbol):
         return summary
     except Exception:
         return "no major news"
+
 
 def fetch_finnhub_analyst(symbol):
     try:
@@ -252,5 +252,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
