@@ -11,13 +11,13 @@ from datetime import datetime, timedelta, timezone
 # ---------------- CONFIG ----------------
 load_dotenv()
 
-API_KEY = os.getenv("DEEPSEEK_KEY")
+DEEPSEEK_KEY = os.getenv("DEEPSEEK_KEY")
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
 BASE_URL = "https://paper-api.alpaca.markets"
 
-if not all([API_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET]):
+if not all([DEEPSEEK_KEY, FINNHUB_KEY, ALPACA_KEY, ALPACA_SECRET]):
     raise SystemExit("missing env vars for API keys")
 
 # ---------------- LOGGING ----------------
@@ -63,7 +63,6 @@ def safe_json(r):
         return {}
 
 # ---------- FINNHUB NEWS / SOCIAL ----------
-
 def fetch_finnhub_news(symbol):
     today = datetime.today().date()
     yesterday = today - timedelta(days=3)
@@ -82,7 +81,6 @@ def fetch_finnhub_news(symbol):
         return summary
     except Exception:
         return "no major news"
-
 
 def fetch_finnhub_analyst(symbol):
     try:
@@ -119,8 +117,8 @@ def fetch_finnhub_social(symbol):
     except Exception:
         return ""
 
-# ---------- STOCK SUMMARY (AI ONLY, NO TECHNICAL) ----------
-def get_stock_summary(tickers):
+# ---------- STOCK SUMMARY ----------
+def get_stock_summary(tickers, math_scores):
     summaries = []
     for t in tickers:
         try:
@@ -129,7 +127,8 @@ def get_stock_summary(tickers):
                 "sector": SECTORS.get(t,""),
                 "news": fetch_finnhub_news(t),
                 "analyst": fetch_finnhub_analyst(t),
-                "social": fetch_finnhub_social(t)
+                "social": fetch_finnhub_social(t),
+                "math_score": math_scores.get(t, 50)  # default neutral
             })
             time.sleep(0.05)
         except Exception:
@@ -139,23 +138,24 @@ def get_stock_summary(tickers):
 # ---------- DEEPSEEK PROMPT ----------
 def build_prompt(summaries):
     prompt = (
-        "You are a short-term stock trading AI. Calculate a numeric score 0-100 for each stock using these weights:\n"
+        "You are a short-term stock trading AI. Combine the numeric math score with the following data to calculate a final 0-100 score:\n"
         "- News/catalysts: 40%\n"
         "- Social sentiment: 20%\n"
         "- Sector/macro context: 20%\n"
-        "- Fundamentals/analyst ratings: 20%\n\n"
-        "Score based on recent news (last 3 days), social sentiment, sector/macro trends, and analyst ratings.\n"
+        "- Fundamentals/analyst ratings: 20%\n"
+        "- Math/technical score: 40% (already normalized 0-100)\n\n"
         "Normalize all inputs to 0-100. Output format: SYMBOL: RECOMMENDATION (1-2 word note if relevant). Include confidence HIGH/MEDIUM/LOW. Do NOT include numeric scores.\n\n"
     )
-    prompt += "\n".join(
-        f"{s['symbol']}, sector {s['sector']}, analyst {s['analyst']}, social {s['social']}, news: {s['news'] if isinstance(s['news'],str) else 'no major news'}"
-        for s in summaries
-    )
+    for s in summaries:
+        prompt += (
+            f"{s['symbol']}, sector {s['sector']}, analyst {s['analyst']}, "
+            f"social {s['social']}, news: {s['news']}, math score: {s['math_score']}\n"
+        )
     return prompt
 
 def ask_deepseek(prompt):
     url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {API_KEY}","Content-Type":"application/json"}
+    headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}","Content-Type":"application/json"}
     payload = {"model":"deepseek-chat","messages":[{"role":"user","content":prompt}],"temperature":0.2,"max_tokens":500}
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=30)
@@ -169,16 +169,13 @@ def ask_deepseek(prompt):
 # ---------- PLACE ORDERS ----------
 def place_order(symbol, signal):
     if not api:
-        log.warning(f"Alpaca API not initialized — skipping {symbol}")
         return
     with trade_lock:
         try:
             account = api.get_account()
             if account.status != "ACTIVE" or account.trading_blocked:
                 return
-
             signal = signal.upper().strip()
-
             if "SELL" in signal:
                 try:
                     pos = api.get_position(symbol)
@@ -188,14 +185,13 @@ def place_order(symbol, signal):
                         log.info(f"sold {qty} shares of {symbol}")
                 except Exception:
                     log.exception(f"sell error for {symbol}")
-                return
         except Exception:
             log.exception(f"place_order fatal error for {symbol}")
 
 # ---------- EXECUTE TRADING LOGIC ----------
-def execute_trading_logic():
+def execute_trading_logic(math_scores):
     log.info("execute_trading_logic() STARTED")
-    summaries = get_stock_summary(TICKERS)
+    summaries = get_stock_summary(TICKERS, math_scores)
     if not summaries:
         return
 
@@ -221,11 +217,11 @@ def execute_trading_logic():
         place_order(sym, sig)
 
 # ---------- BOT LOOP ----------
-def run_bot():
+def run_ai_bot(math_scores):
     log.info("AI bot loop online")
     while True:
         try:
-            execute_trading_logic()
+            execute_trading_logic(math_scores)
         except Exception:
             log.exception("AI bot loop error")
         time.sleep(600)  # every 10 min
@@ -241,17 +237,17 @@ def home():
 def trigger():
     def run():
         try:
-            execute_trading_logic()
+            execute_trading_logic(math_scores={})  # provide math_scores dict if available
         except Exception:
             log.exception("manual trigger failed")
     threading.Thread(target=run).start()
     return "Triggered AI trading logic (manual run)!"
 
+# ---------- MAIN ----------
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
+    # example: math_scores could come from your math script
+    example_math_scores = {sym: 50 for sym in TICKERS}  # placeholder neutral scores
+    threading.Thread(target=run_ai_bot, args=(example_math_scores,), daemon=True).start()
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
-
-
-
