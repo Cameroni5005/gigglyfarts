@@ -97,7 +97,7 @@ def fetch_finnhub_analyst(symbol):
         return ""
 
 def fetch_finnhub_social(symbol):
-    today = datetime.date.today()
+    today = datetime.today().date()
     key = (symbol, today)
     if key in CACHE['social']:
         return CACHE['social'][key]
@@ -252,4 +252,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
