@@ -19,8 +19,29 @@ if not all([API_KEY, ALPACA_KEY, ALPACA_SECRET]):
     raise SystemExit("missing env vars for API keys")
 
 # ---------------- LOGGING ----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger(__name__)
+from logging.handlers import RotatingFileHandler
+
+log = logging.getLogger()
+log.setLevel(logging.INFO)
+
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+file_handler = RotatingFileHandler(
+    "bot.log",
+    maxBytes=5_000_000,
+    backupCount=3
+)
+file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.INFO)
+
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+stream_handler.setLevel(logging.INFO)
+
+log.handlers.clear()
+log.addHandler(file_handler)
+log.addHandler(stream_handler)
+
 
 # ---------------- ALPACA ----------------
 api = None
@@ -194,7 +215,10 @@ def run_bot():
             execute_trading_logic()
         except Exception:
             log.exception("AI bot loop error")
-        time.sleep(600)  # every 10 min
+        for h in log.handlers:
+    h.flush()
+
+time.sleep(600)
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
@@ -218,4 +242,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
