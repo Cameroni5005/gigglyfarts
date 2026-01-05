@@ -101,10 +101,11 @@ def compute_technical(symbol):
     closes = [d["close"] for d in data]
     volumes = [d["volume"] for d in data]
 
-    ma5 = sum(closes[-5:])/5 if len(closes)>=5 else None
-    ma20 = sum(closes[-20:])/20 if len(closes)>=20 else None
+    # --- moving averages ---
+    ma_short = sum(closes[-10:])/10 if len(closes) >= 10 else None   # 10-min MA
+    ma_2h = sum(closes[-120:])/120 if len(closes) >= 120 else sum(closes)/len(closes)  # 2-hour MA
 
-    # RSI 14
+    # --- RSI 14 (unchanged) ---
     rsi = None
     period = 14
     if len(closes) > period:
@@ -121,12 +122,14 @@ def compute_technical(symbol):
     last = closes[-1]
     prev = closes[-2] if len(closes)>1 else last
     delta = last-prev
-    avg_vol30 = sum(volumes[-30:])/30 if len(volumes)>=30 else volumes[-1]
-    vol_change = (volumes[-1]-avg_vol30)/avg_vol30*100 if avg_vol30!=0 else 0
 
-    # ATR
+    # --- volume change over last 2 hours ---
+    avg_vol_2h = sum(volumes[-120:])/len(volumes[-120:]) if len(volumes)>=120 else sum(volumes)/len(volumes)
+    vol_change = (volumes[-1]-avg_vol_2h)/avg_vol_2h*100 if avg_vol_2h != 0 else 0
+
+    # --- ATR (unchanged) ---
     atr = None
-    if len(data)>1:
+    if len(data) > 1:
         tr_list = []
         for i in range(1,len(data)):
             h = data[i]['high']
@@ -136,7 +139,17 @@ def compute_technical(symbol):
             tr_list.append(tr)
         atr = sum(tr_list[-14:])/14 if len(tr_list)>=14 else tr_list[-1]
 
-    return {"price": last, "change": delta, "ma5": ma5, "ma20": ma20, "rsi": rsi, "volume": volumes[-1], "vol_change": vol_change, "atr": atr}
+    return {
+        "price": last,
+        "change": delta,
+        "ma_short": ma_short,
+        "ma_2h": ma_2h,
+        "rsi": rsi,
+        "volume": volumes[-1],
+        "vol_change": vol_change,
+        "atr": atr
+    }
+
 
 # ---------------- MATH SCORE (GENERALIZED) ----------------
 def compute_math_score(symbol):
