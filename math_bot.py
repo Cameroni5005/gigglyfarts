@@ -98,14 +98,26 @@ def compute_technical(symbol):
     data = get_intraday_data(symbol)
     if not data:
         return None
+
     closes = [d["close"] for d in data]
     volumes = [d["volume"] for d in data]
 
-    # --- moving averages ---
-    ma_short = sum(closes[-10:])/10 if len(closes) >= 10 else None   # 10-min MA
-    ma_2h = sum(closes[-120:])/120 if len(closes) >= 120 else sum(closes)/len(closes)  # 2-hour MA
+    now = datetime.now().time()
+    # adjust MA lengths depending on market time
+    if now < datetime.strptime("10:30","%H:%M").time():  # early market
+        ma_short_len = 5
+        ma_long_len = 15
+    elif now < datetime.strptime("14:30","%H:%M").time():  # midday
+        ma_short_len = 10
+        ma_long_len = 20
+    else:  # late session
+        ma_short_len = 7
+        ma_long_len = 15
 
-    # --- RSI 14 (unchanged) ---
+    ma_short = sum(closes[-ma_short_len:])/ma_short_len if len(closes)>=ma_short_len else None
+    ma_long = sum(closes[-ma_long_len:])/ma_long_len if len(closes)>=ma_long_len else None
+
+    # RSI 14
     rsi = None
     period = 14
     if len(closes) > period:
@@ -123,13 +135,14 @@ def compute_technical(symbol):
     prev = closes[-2] if len(closes)>1 else last
     delta = last-prev
 
-    # --- volume change over last 2 hours ---
-    avg_vol_2h = sum(volumes[-120:])/len(volumes[-120:]) if len(volumes)>=120 else sum(volumes)/len(volumes)
-    vol_change = (volumes[-1]-avg_vol_2h)/avg_vol_2h*100 if avg_vol_2h != 0 else 0
+    # volume spike last 2 hours (~120 min)
+    vol_window = min(120, len(volumes))
+    avg_vol = sum(volumes[-vol_window:])/vol_window if vol_window>0 else 0
+    vol_change = (volumes[-1]-avg_vol)/avg_vol*100 if avg_vol!=0 else 0
 
-    # --- ATR (unchanged) ---
+    # ATR
     atr = None
-    if len(data) > 1:
+    if len(data)>1:
         tr_list = []
         for i in range(1,len(data)):
             h = data[i]['high']
@@ -143,21 +156,21 @@ def compute_technical(symbol):
         "price": last,
         "change": delta,
         "ma_short": ma_short,
-        "ma_2h": ma_2h,
+        "ma_long": ma_long,
         "rsi": rsi,
         "volume": volumes[-1],
         "vol_change": vol_change,
         "atr": atr
     }
 
-
-# ---------------- MATH SCORE (GENERALIZED) ----------------
+# ---------------- MATH SCORE ----------------
 def compute_math_score(symbol):
     tech = compute_technical(symbol)
-    score = 50  # default neutral
+    score = 50  # neutral
     if tech:
+        # weights: ma 30%, rsi 40%, volume 30%
+        ma_score = 100 if tech['ma_short'] > tech['ma_long'] else 0
         rsi_score = 100 - tech['rsi'] if tech['rsi'] is not None else 50
-        ma_score = 100 if tech['ma5'] > tech['ma20'] else 0
         vol_score = min(max(tech['vol_change'],0),100)
         score = rsi_score*0.4 + ma_score*0.3 + vol_score*0.3
     return score
@@ -217,7 +230,7 @@ def fetch_finnhub_analyst(symbol):
     except Exception:
         return ""
 
-# ---------------- COMBINE MATH + AI INFO ----------------
+# ---------------- COMBINE ----------------
 def build_combined_summary(symbol):
     return {
         "symbol": symbol,
@@ -228,7 +241,6 @@ def build_combined_summary(symbol):
         "sector": SECTORS.get(symbol,"")
     }
 
-# ---------------- GET ALL SUMMARIES ----------------
 def get_all_summaries(tickers):
     summaries = []
     for sym in tickers:
