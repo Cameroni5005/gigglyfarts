@@ -42,7 +42,6 @@ log.handlers.clear()
 log.addHandler(file_handler)
 log.addHandler(stream_handler)
 
-
 # ---------------- ALPACA ----------------
 api = None
 try:
@@ -61,22 +60,18 @@ TICKERS = [
     "BABA","NKE","SBUX","QCOM","PEP","KO"
 ]
 
+# ---------------- COMPANY NAMES ----------------
+COMPANY_NAMES = {
+    "AAPL":"Apple","MSFT":"Microsoft","AMZN":"Amazon","NVDA":"Nvidia","GOOG":"Google",
+    "META":"Meta","TSLA":"Tesla","NFLX":"Netflix","DIS":"Disney","PYPL":"Paypal",
+    "INTC":"Intel","CSCO":"Cisco","ADBE":"Adobe","ORCL":"Oracle","IBM":"IBM",
+    "CRM":"Salesforce","AMD":"AMD","UBER":"Uber","LYFT":"Lyft","SHOP":"Shopify",
+    "BABA":"Alibaba","NKE":"Nike","SBUX":"Starbucks","QCOM":"Qualcomm","PEP":"PepsiCo",
+    "KO":"Coca-Cola"
+}
+
 # ---------------- FETCH MATH SCRIPT OUTPUT ----------------
 def fetch_math_summaries():
-    """
-    expects math_bot.py to be in same folder
-    returns list of dicts:
-    [
-        {
-            "symbol": "AAPL",
-            "math_score": 78.2,
-            "news": "some headline",
-            "social": "bullish",
-            "analyst": "analyst avg buy",
-            "sector": "Technology"
-        }, ...
-    ]
-    """
     import math_bot
     return math_bot.get_all_summaries(TICKERS)
 
@@ -139,8 +134,7 @@ def place_order(symbol, signal):
                     log.info(f"already holding {symbol}, skipping buy")
                     return
 
-                # simple fixed position sizing
-                max_spend = cash * 0.05  # 5% of cash
+                max_spend = cash * 0.05
                 if max_spend < 10:
                     log.info(f"not enough cash to buy {symbol}")
                     return
@@ -158,7 +152,8 @@ def place_order(symbol, signal):
                     type="market",
                     time_in_force="day"
                 )
-                log.info(f"bought {qty} shares of {symbol}")
+                company = COMPANY_NAMES.get(symbol, symbol)
+                log.info(f"bought {qty} shares of {symbol} ({company})")
                 return
 
             # ----- SELL LOGIC -----
@@ -170,12 +165,12 @@ def place_order(symbol, signal):
                     type="market",
                     time_in_force="day"
                 )
-                log.info(f"sold {held_qty} shares of {symbol}")
+                company = COMPANY_NAMES.get(symbol, symbol)
+                log.info(f"sold {held_qty} shares of {symbol} ({company})")
                 return
 
         except Exception:
             log.exception(f"order error for {symbol}")
-
 
 # ---------------- EXECUTE TRADING LOGIC ----------------
 def execute_trading_logic():
@@ -191,7 +186,8 @@ def execute_trading_logic():
         log.warning("DeepSeek returned empty or invalid response")
         return
 
-    log.info("DAILY AI STOCK SIGNALS:\n%s", signals)
+    # ---- PARSE AND LOG AI SIGNALS WITH COMPANY NAMES ----
+    log.info("DAILY AI STOCK SIGNALS:")
     seen = set()
     for line in signals.splitlines():
         if ":" not in line:
@@ -201,10 +197,11 @@ def execute_trading_logic():
         if sym in seen:
             continue
         seen.add(sym)
-        sig = raw_sig.strip().upper()  # only the recommendation
+        sig = raw_sig.strip().upper()
         if sig not in ["STRONG BUY","BUY","HOLD","SELL","STRONG SELL"]:
             sig = "HOLD"
-        log.info(f"parsed AI signal: {sym} → {sig}")
+        company = COMPANY_NAMES.get(sym, sym)
+        log.info(f"{sym} ({company}) → {sig}")
         place_order(sym, sig)
 
 # ---------------- BOT LOOP ----------------
@@ -220,8 +217,6 @@ def run_bot():
             h.flush()
 
         time.sleep(600)
-
-
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
@@ -245,7 +240,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
-
-
-
-
