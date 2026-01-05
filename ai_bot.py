@@ -105,6 +105,7 @@ def ask_deepseek(prompt):
         return ""
 
 # ---------------- PLACE ORDERS ----------------
+# ---------------- PLACE ORDERS (with position sizing & bracket orders) ----------------
 def place_order(symbol, signal):
     if not api:
         log.warning(f"alpaca api not initialized — skipping {symbol}")
@@ -117,6 +118,7 @@ def place_order(symbol, signal):
                 return
 
             signal = signal.upper().strip()
+
             # get current position if exists
             try:
                 pos = api.get_position(symbol)
@@ -125,6 +127,60 @@ def place_order(symbol, signal):
                 held_qty = 0
 
             cash = float(account.cash)
+            risk_per_trade = 0.02  # risk 2% of cash per trade
+            max_spend = cash * risk_per_trade
+
+            last_price = api.get_latest_trade(symbol).price
+
+            # calculate qty based on risk
+            qty = int(max_spend // last_price)
+            if qty <= 0:
+                log.info(f"not enough cash to buy {symbol}")
+                return
+
+            # ----- BUY LOGIC -----
+            if signal in ["BUY", "STRONG BUY"]:
+                if held_qty > 0:
+                    log.info(f"already holding {symbol}, skipping buy")
+                    return
+
+                stop_loss_pct = 0.015  # 1.5% stop-loss
+                take_profit_pct = 0.03  # 3% take-profit
+
+                stop_price = round(last_price * (1 - stop_loss_pct), 2)
+                limit_price = round(last_price * (1 + take_profit_pct), 2)
+
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="market",
+                    time_in_force="day",
+                    order_class="bracket",
+                    take_profit={"limit_price": limit_price},
+                    stop_loss={"stop_price": stop_price}
+                )
+
+                company = COMPANY_NAMES.get(symbol, symbol)
+                log.info(f"bought {qty} shares of {symbol} ({company}) with stop {stop_price} and target {limit_price}")
+                return
+
+            # ----- SELL LOGIC -----
+            if "SELL" in signal and held_qty > 0:
+                api.submit_order(
+                    symbol=symbol,
+                    qty=held_qty,
+                    side="sell",
+                    type="market",
+                    time_in_force="day"
+                )
+                company = COMPANY_NAMES.get(symbol, symbol)
+                log.info(f"sold {held_qty} shares of {symbol} ({company})")
+                return
+
+        except Exception:
+            log.exception(f"order error for {symbol}")
+
 
             # ----- BUY LOGIC -----
             if signal in ["BUY", "STRONG BUY"]:
@@ -238,3 +294,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
