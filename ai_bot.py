@@ -6,6 +6,11 @@ import requests
 from flask import Flask
 from alpaca_trade_api.rest import REST, APIError
 from dotenv import load_dotenv
+from datetime import datetime, time as dtime
+
+# ---------------- MARKET TIMES ----------------
+MARKET_OPEN = dtime(9, 30)   # 9:30 am ET
+MARKET_CLOSE = dtime(16, 0)  # 4:00 pm ET
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -205,18 +210,38 @@ def execute_trading_logic():
         place_order(sym, sig)
 
 # ---------------- BOT LOOP ----------------
+
 def run_bot():
-    log.info("AI bot loop online")
+    log.info("AI bot scheduled loop online")
+    already_ran = set()  # track which times we've already executed today
+
     while True:
-        try:
-            execute_trading_logic()
-        except Exception:
-            log.exception("AI bot loop error")
+        now = datetime.now()
 
-        for h in log.handlers:
-            h.flush()
+        # convert current time to ET if needed, assuming server in local time
+        # if your server is in ET, this is fine; otherwise adjust for timezone
 
-        time.sleep(600)
+        # define target trigger times
+        triggers = [
+            dtime(MARKET_OPEN.hour, MARKET_OPEN.minute + 10),  # 10 min after open
+            dtime((MARKET_OPEN.hour + MARKET_CLOSE.hour)//2, 0),  # approximate middle
+            dtime(MARKET_CLOSE.hour, MARKET_CLOSE.minute - 10)  # 10 min before close
+        ]
+
+        for t in triggers:
+            if now.time().hour == t.hour and now.time().minute == t.minute and t not in already_ran:
+                try:
+                    log.info(f"Triggering AI trading logic for scheduled time {t}")
+                    execute_trading_logic()
+                except Exception:
+                    log.exception("Scheduled execution failed")
+                already_ran.add(t)
+
+        # reset after market close
+        if now.time() >= MARKET_CLOSE:
+            already_ran.clear()
+
+        time.sleep(20)  # check every 20 seconds
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
@@ -240,3 +265,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
