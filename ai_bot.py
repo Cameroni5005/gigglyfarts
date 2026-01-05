@@ -211,14 +211,16 @@ def execute_trading_logic():
 def run_bot():
     log.info("AI bot loop online")
     while True:
-        try:
-            execute_trading_logic()
-        except Exception:
-            log.exception("AI bot loop error")
-        for h in log.handlers:
-    h.flush()
+    try:
+        execute_trading_logic()
+    except Exception:
+        log.exception("AI bot loop error")
 
-time.sleep(600)
+    for h in log.handlers:
+        h.flush()
+
+    time.sleep(600)
+
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
@@ -242,5 +244,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
