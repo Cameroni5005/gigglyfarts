@@ -92,8 +92,9 @@ def ask_deepseek(prompt):
 # ---------------- PLACE ORDERS ----------------
 def place_order(symbol, signal):
     if not api:
-        log.warning(f"Alpaca API not initialized — skipping {symbol}")
+        log.warning(f"alpaca api not initialized — skipping {symbol}")
         return
+
     with trade_lock:
         try:
             account = api.get_account()
@@ -102,18 +103,58 @@ def place_order(symbol, signal):
 
             signal = signal.upper().strip()
 
-            if "SELL" in signal:
-                try:
-                    pos = api.get_position(symbol)
-                    qty = int(pos.qty)
-                    if qty>0:
-                        api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
-                        log.info(f"sold {qty} shares of {symbol}")
-                except Exception:
-                    log.exception(f"sell error for {symbol}")
+            # get current position if exists
+            try:
+                pos = api.get_position(symbol)
+                held_qty = int(pos.qty)
+            except Exception:
+                held_qty = 0
+
+            cash = float(account.cash)
+
+            # ----- BUY LOGIC -----
+            if signal in ["BUY", "STRONG BUY"]:
+                if held_qty > 0:
+                    log.info(f"already holding {symbol}, skipping buy")
+                    return
+
+                # simple fixed position sizing
+                max_spend = cash * 0.05  # 5% of cash
+                if max_spend < 10:
+                    log.info(f"not enough cash to buy {symbol}")
+                    return
+
+                last_price = api.get_latest_trade(symbol).price
+                qty = int(max_spend // last_price)
+
+                if qty <= 0:
+                    return
+
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="market",
+                    time_in_force="day"
+                )
+                log.info(f"bought {qty} shares of {symbol}")
                 return
+
+            # ----- SELL LOGIC -----
+            if "SELL" in signal and held_qty > 0:
+                api.submit_order(
+                    symbol=symbol,
+                    qty=held_qty,
+                    side="sell",
+                    type="market",
+                    time_in_force="day"
+                )
+                log.info(f"sold {held_qty} shares of {symbol}")
+                return
+
         except Exception:
-            log.exception(f"place_order fatal error for {symbol}")
+            log.exception(f"order error for {symbol}")
+
 
 # ---------------- EXECUTE TRADING LOGIC ----------------
 def execute_trading_logic():
@@ -177,3 +218,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
