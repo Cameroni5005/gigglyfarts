@@ -6,7 +6,8 @@ import requests
 from flask import Flask
 from alpaca_trade_api.rest import REST
 from dotenv import load_dotenv
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
+
 
 # ---------------- MARKET TIMES ----------------
 MARKET_OPEN = dtime(9, 30)   # 9:30 am ET
@@ -232,12 +233,19 @@ def run_bot():
         mid_minutes = open_minutes + (close_minutes - open_minutes)//2
         mid_time = dtime(mid_minutes//60, mid_minutes%60)
 
-        # target triggers
-        triggers = [
-            dtime(MARKET_OPEN.hour, MARKET_OPEN.minute + 10),  # 10 min after open
-            mid_time,                                          # middle of market
-            dtime(MARKET_CLOSE.hour, MARKET_CLOSE.minute - 10)  # 10 min before close
+        # calculate 10 min after open and 10 min before close as datetime objects
+        trigger_after_open = datetime.combine(now.date(), MARKET_OPEN) + timedelta(minutes=10)
+        market_close_dt = datetime.combine(now.date(), MARKET_CLOSE)
+        trigger_before_close = market_close_dt - timedelta(minutes=10)
+        mid_time_dt = datetime.combine(now.date(), mid_time)
+
+        # target triggers as datetimes
+       triggers = [
+            trigger_after_open,
+            mid_time_dt,
+            trigger_before_close
         ]
+
 
         for t in triggers:
             if abs((now - t).total_seconds()) < 30 and t not in already_ran:
@@ -276,6 +284,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
