@@ -207,6 +207,8 @@ def place_order(symbol, signal):
 
             risk_dollars = equity * risk_pct
             qty = int(risk_dollars // (price * stop_pct))
+            qty = qty * 3   # <-- double the position size
+
 
             if qty <= 0:
                 return
@@ -282,4 +284,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info(f"starting flask on {port}")
     app.run(host="0.0.0.0", port=port)
+
 
