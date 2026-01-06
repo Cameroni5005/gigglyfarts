@@ -8,6 +8,12 @@ from alpaca_trade_api.rest import REST
 from dotenv import load_dotenv
 from datetime import datetime, time as dtime, timedelta
 
+from math_bot import (
+    get_all_summaries,
+    fetch_finnhub_news,
+    fetch_finnhub_social,
+    fetch_finnhub_analyst
+)
 
 # ---------------- MARKET TIMES ----------------
 MARKET_OPEN = dtime(9, 30)   # 9:30 am ET
@@ -306,6 +312,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
