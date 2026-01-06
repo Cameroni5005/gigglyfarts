@@ -43,6 +43,23 @@ log.handlers.clear()
 log.addHandler(file_handler)
 log.addHandler(stream_handler)
 
+# ---------------- SYSTEM CHECK ----------------
+def run_system_check(sample_symbols=None):
+    if sample_symbols is None:
+        sample_symbols = ["AAPL", "TSLA", "GOOG"]  # small sample for quick check
+    log.info("=== RUNNING SYSTEM CHECK ===")
+    for sym in sample_symbols:
+        try:
+            news = fetch_finnhub_news(sym)
+            social = fetch_finnhub_social(sym)
+            analyst = fetch_finnhub_analyst(sym)
+            math_score = fetch_math_summaries()[0]['math_score'] if fetch_math_summaries() else None
+            log.info(f"SYSTEM CHECK: {sym} -> news: {news}, social: {social}, analyst: {analyst}, math_score: {math_score}")
+        except Exception:
+            log.exception(f"system check failed for {sym}")
+    log.info("=== SYSTEM CHECK COMPLETE ===\n")
+
+
 # ---------------- ALPACA ----------------
 api = None
 try:
@@ -280,8 +297,13 @@ def trigger():
     return "Triggered AI trading logic (manual run)!"
 
 if __name__ == "__main__":
+    # --- RUN SYSTEM CHECK ON STARTUP ---
+    run_system_check()  # prints news, social, analyst, math score for a sample of stocks
+
+    # --- START BOT LOOP ---
     threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.getenv("PORT",5000))
+    
+    port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
 
