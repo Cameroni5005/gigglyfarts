@@ -8,6 +8,8 @@ from alpaca_trade_api.rest import REST
 from dotenv import load_dotenv
 from datetime import datetime, time as dtime, timedelta
 
+log = logging.getLogger(__name__)
+
 from math_bot import (
     get_all_summaries,
     fetch_finnhub_news,
@@ -50,20 +52,46 @@ log.addHandler(file_handler)
 log.addHandler(stream_handler)
 
 # ---------------- SYSTEM CHECK ----------------
-def run_system_check(sample_symbols=None):
-    if sample_symbols is None:
-        sample_symbols = ["AAPL", "TSLA", "GOOG"]  # small sample for quick check
+def run_system_check(symbols):
     log.info("=== RUNNING SYSTEM CHECK ===")
-    for sym in sample_symbols:
+
+    for sym in symbols:
         try:
-            news = fetch_finnhub_news(sym)
-            social = fetch_finnhub_social(sym)
-            analyst = fetch_finnhub_analyst(sym)
-            math_score = fetch_math_summaries()[0]['math_score'] if fetch_math_summaries() else None
-            log.info(f"SYSTEM CHECK: {sym} -> news: {news}, social: {social}, analyst: {analyst}, math_score: {math_score}")
+            # small sleep to avoid hitting rate limits
+            time.sleep(1)  # 1 second per call, tweak if needed
+
+            # fetch each system safely
+            try:
+                news = fetch_finnhub_news(sym)
+            except Exception:
+                news = ""
+                log.warning(f"News fetch failed for {sym}")
+
+            try:
+                social = fetch_social_sentiment(sym)
+            except Exception:
+                social = ""
+                log.warning(f"Social sentiment fetch failed for {sym}")
+
+            try:
+                analyst = fetch_analyst_rating(sym)
+            except Exception:
+                analyst = ""
+                log.warning(f"Analyst rating fetch failed for {sym}")
+
+            try:
+                math_score = fetch_math_score(sym)
+            except Exception:
+                math_score = None
+                log.warning(f"Math score fetch failed for {sym}")
+
+            log.info(f"SYSTEM CHECK: {sym} -> news: {news}, social: {social}, "
+                     f"analyst: {analyst}, math_score: {math_score}")
+
         except Exception:
             log.exception(f"system check failed for {sym}")
-    log.info("=== SYSTEM CHECK COMPLETE ===\n")
+
+    log.info("=== SYSTEM CHECK COMPLETE ===")
 
 
 # ---------------- ALPACA ----------------
@@ -312,6 +340,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
