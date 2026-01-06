@@ -228,10 +228,10 @@ def run_bot():
         now = datetime.now()
 
         # calculate mid-market time
-        open_minutes = MARKET_OPEN.hour*60 + MARKET_OPEN.minute
-        close_minutes = MARKET_CLOSE.hour*60 + MARKET_CLOSE.minute
-        mid_minutes = open_minutes + (close_minutes - open_minutes)//2
-        mid_time = dtime(mid_minutes//60, mid_minutes%60)
+        open_minutes = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute
+        close_minutes = MARKET_CLOSE.hour * 60 + MARKET_CLOSE.minute
+        mid_minutes = open_minutes + (close_minutes - open_minutes) // 2
+        mid_time = dtime(mid_minutes // 60, mid_minutes % 60)
 
         # calculate 10 min after open and 10 min before close as datetime objects
         trigger_after_open = datetime.combine(now.date(), MARKET_OPEN) + timedelta(minutes=10)
@@ -240,12 +240,11 @@ def run_bot():
         mid_time_dt = datetime.combine(now.date(), mid_time)
 
         # target triggers as datetimes
-       triggers = [
+        triggers = [
             trigger_after_open,
             mid_time_dt,
             trigger_before_close
         ]
-
 
         for t in triggers:
             if abs((now - t).total_seconds()) < 30 and t not in already_ran:
@@ -261,6 +260,7 @@ def run_bot():
             already_ran.clear()
 
         time.sleep(20)
+
 
 # ---------------- FLASK APP ----------------
 app = Flask(__name__)
@@ -284,6 +284,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
