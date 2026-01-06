@@ -6,6 +6,10 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+# ---------- INTRADAY CACHE ----------
+INTRADAY_CACHE = {}
+INTRADAY_TTL = 60  # seconds
+
 # ---------------- CONFIG ----------------
 load_dotenv()
 
@@ -91,8 +95,19 @@ def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
         return []
 
 def get_intraday_data(symbol):
+    now = time.time()
+
+    cached = INTRADAY_CACHE.get(symbol)
+    if cached:
+        data, ts = cached
+        if now - ts < INTRADAY_TTL:
+            return data
+
     bars = fetch_twelvedata_bars(symbol)
-    return bars if isinstance(bars,list) else []
+    if bars:
+        INTRADAY_CACHE[symbol] = (bars, now)
+    return bars
+
 
 # ---------------- TECHNICAL CALCULATIONS ----------------
 def compute_technical(symbol):
