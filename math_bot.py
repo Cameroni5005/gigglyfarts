@@ -6,10 +6,6 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
-# ---------- INTRADAY CACHE ----------
-INTRADAY_CACHE = {}
-INTRADAY_TTL = 60  # seconds
-
 # ---------------- CONFIG ----------------
 load_dotenv()
 
@@ -69,30 +65,34 @@ def twelve_rate_limit():
         _twelve_calls.append(time.time())
 
 def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
-    try:
-        twelve_rate_limit()
-        r = requests.get(
-            "https://api.twelvedata.com/time_series",
-            params={
-                "symbol": symbol,
-                "interval": interval,
-                "outputsize": limit,
-                "apikey": TWELVEDATA_KEY
-            },
-            timeout=8
-        )
-        data = safe_json(r)
-        if not data or "values" not in data:
-            return []
-        bars = [{"time": v.get("datetime"),
-                 "close": float(v.get("close",0)),
-                 "high": float(v.get("high",0)),
-                 "low": float(v.get("low",0)),
-                 "volume": float(v.get("volume",0))} for v in reversed(data["values"])]
-        return bars
-    except Exception:
-        log.exception(f"{symbol} bars error")
+    twelve_rate_limit()
+
+    r = requests.get(
+        "https://api.twelvedata.com/time_series",
+        params={
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": limit,
+            "apikey": TWELVEDATA_KEY
+        },
+        timeout=8
+    )
+
+    data = safe_json(r)
+    if not data or "values" not in data:
         return []
+
+    return [
+        {
+            "time": v["datetime"],
+            "close": float(v["close"]),
+            "high": float(v["high"]),
+            "low": float(v["low"]),
+            "volume": float(v["volume"]),
+        }
+        for v in reversed(data["values"])
+    ]
+
 
 def get_intraday_data(symbol):
     now = time.time()
@@ -177,14 +177,21 @@ def compute_technical(symbol):
 
 # ---------------- MATH SCORE ----------------
 def compute_math_score(symbol):
-    tech = compute_technical(symbol)
+    try:
+        tech = compute_technical(symbol)
+    except TwelveRateLimit:
+        log.warning("math fetch timed out (twelvedata rate limit). skipping this cycle")
+        raise
+
     score = 50
     if tech:
         ma_score = 100 if tech['ma_short'] > tech['ma_long'] else 0
         rsi_score = 100 - tech['rsi'] if tech['rsi'] is not None else 50
         vol_score = min(max(tech['vol_change'],0),100)
         score = rsi_score*0.4 + ma_score*0.3 + vol_score*0.3
+
     return score
+
 
 # ---------------- FINNHUB NEWS / SOCIAL ----------------
 def fetch_finnhub_news(symbol):
@@ -256,18 +263,13 @@ def get_all_summaries(tickers):
     summaries = []
     for sym in tickers:
         try:
-            # retry up to 3 times if math fetch fails due to twelve limit
-            for _ in range(3):
-                try:
-                    summaries.append(build_combined_summary(sym))
-                    break
-                except Exception:
-                    log.warning(f"{sym} math fetch failed, retrying")
-                    time.sleep(2)
-            time.sleep(0.05)
+            summaries.append(build_combined_summary(sym))
+        except TwelveRateLimit:
+            return []   # <- HARD STOP, no spam
         except Exception:
             log.exception(f"error building summary for {sym}")
     return summaries
+
 
 # ---------------- TEST RUN ----------------
 if __name__ == "__main__":
