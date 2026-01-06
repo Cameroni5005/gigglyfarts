@@ -8,7 +8,12 @@ from alpaca_trade_api.rest import REST
 from dotenv import load_dotenv
 from datetime import datetime, time as dtime, timedelta
 
-log.info("Connected to Alpaca API (paper trading)")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+log = logging.getLogger(__name__)
 
 # sample system check
 sample_symbols = ["AAPL", "TSLA", "GOOG"]
@@ -348,6 +353,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
