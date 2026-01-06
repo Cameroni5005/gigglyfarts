@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 from datetime import datetime, time as dtime, timedelta
 
 log = logging.getLogger(__name__)
+sample_symbols = ["AAPL", "TSLA", "GOOG"]
+run_system_check(sample_symbols)
+
 
 from math_bot import (
     get_all_summaries,
@@ -340,6 +343,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
 
