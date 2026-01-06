@@ -56,6 +56,7 @@ def twelve_rate_limit():
     global _twelve_calls
     with _twelve_lock:
         now = time.time()
+        # remove old timestamps
         _twelve_calls = [t for t in _twelve_calls if now - t < TWELVE_WINDOW]
         if len(_twelve_calls) >= TWELVE_RATE_LIMIT:
             sleep_for = TWELVE_WINDOW - (now - _twelve_calls[0]) + 0.1
@@ -103,21 +104,19 @@ def compute_technical(symbol):
     volumes = [d["volume"] for d in data]
 
     now = datetime.now().time()
-    # adjust MA lengths depending on market time
-    if now < datetime.strptime("10:30","%H:%M").time():  # early market
+    if now < datetime.strptime("10:30","%H:%M").time():
         ma_short_len = 5
         ma_long_len = 15
-    elif now < datetime.strptime("14:30","%H:%M").time():  # midday
+    elif now < datetime.strptime("14:30","%H:%M").time():
         ma_short_len = 10
         ma_long_len = 20
-    else:  # late session
+    else:
         ma_short_len = 7
         ma_long_len = 15
 
     ma_short = sum(closes[-ma_short_len:])/ma_short_len if len(closes)>=ma_short_len else None
     ma_long = sum(closes[-ma_long_len:])/ma_long_len if len(closes)>=ma_long_len else None
 
-    # RSI 14
     rsi = None
     period = 14
     if len(closes) > period:
@@ -135,12 +134,10 @@ def compute_technical(symbol):
     prev = closes[-2] if len(closes)>1 else last
     delta = last-prev
 
-    # volume spike last 2 hours (~120 min)
     vol_window = min(120, len(volumes))
     avg_vol = sum(volumes[-vol_window:])/vol_window if vol_window>0 else 0
     vol_change = (volumes[-1]-avg_vol)/avg_vol*100 if avg_vol!=0 else 0
 
-    # ATR
     atr = None
     if len(data)>1:
         tr_list = []
@@ -166,9 +163,8 @@ def compute_technical(symbol):
 # ---------------- MATH SCORE ----------------
 def compute_math_score(symbol):
     tech = compute_technical(symbol)
-    score = 50  # neutral
+    score = 50
     if tech:
-        # weights: ma 30%, rsi 40%, volume 30%
         ma_score = 100 if tech['ma_short'] > tech['ma_long'] else 0
         rsi_score = 100 - tech['rsi'] if tech['rsi'] is not None else 50
         vol_score = min(max(tech['vol_change'],0),100)
@@ -245,7 +241,14 @@ def get_all_summaries(tickers):
     summaries = []
     for sym in tickers:
         try:
-            summaries.append(build_combined_summary(sym))
+            # retry up to 3 times if math fetch fails due to twelve limit
+            for _ in range(3):
+                try:
+                    summaries.append(build_combined_summary(sym))
+                    break
+                except Exception:
+                    log.warning(f"{sym} math fetch failed, retrying")
+                    time.sleep(2)
             time.sleep(0.05)
         except Exception:
             log.exception(f"error building summary for {sym}")
