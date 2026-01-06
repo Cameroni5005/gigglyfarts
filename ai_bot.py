@@ -126,16 +126,27 @@ def place_order(symbol, signal):
             except Exception:
                 held_qty = 0
 
-            cash = float(account.cash)
-            risk_per_trade = 0.02  # risk 2% of cash per trade
-            max_spend = cash * risk_per_trade
+            equity = float(account.equity)  # total account equity
+
+            # --- RISK PARAMETERS ---
+            risk_pct = 0.03  # 3% max loss per trade (adjust to hit ~$8k per trade on average)
+            stop_loss_pct = 0.015  # 1.5% stop loss
+            take_profit_pct = 0.03  # 3% take profit
+            max_position_pct = 0.25  # never use more than 25% of account on one trade
 
             last_price = api.get_latest_trade(symbol).price
 
-            # calculate qty based on risk
-            qty = int(max_spend // last_price)
+            # calculate risk-based qty
+            risk_dollars = equity * risk_pct
+            risk_per_share = last_price * stop_loss_pct
+            qty = int(risk_dollars // risk_per_share)
+
+            # cap by max position size
+            max_spend = equity * max_position_pct
+            qty = min(qty, int(max_spend // last_price))
+
             if qty <= 0:
-                log.info(f"not enough cash to buy {symbol}")
+                log.info(f"not enough funds to buy {symbol}")
                 return
 
             # ----- BUY LOGIC -----
@@ -143,9 +154,6 @@ def place_order(symbol, signal):
                 if held_qty > 0:
                     log.info(f"already holding {symbol}, skipping buy")
                     return
-
-                stop_loss_pct = 0.015  # 1.5% stop-loss
-                take_profit_pct = 0.03  # 3% take-profit
 
                 stop_price = round(last_price * (1 - stop_loss_pct), 2)
                 limit_price = round(last_price * (1 + take_profit_pct), 2)
@@ -181,32 +189,6 @@ def place_order(symbol, signal):
         except Exception:
             log.exception(f"order error for {symbol}")
 
-
-            # ----- BUY LOGIC -----
-            if signal in ["BUY", "STRONG BUY"]:
-                if held_qty > 0:
-                    log.info(f"already holding {symbol}, skipping buy")
-                    return
-                max_spend = cash * 0.05
-                if max_spend < 10:
-                    log.info(f"not enough cash to buy {symbol}")
-                    return
-                last_price = api.get_latest_trade(symbol).price
-                qty = int(max_spend // last_price)
-                if qty <= 0:
-                    return
-                api.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
-                log.info(f"bought {qty} shares of {symbol} ({COMPANY_NAMES.get(symbol,symbol)})")
-                return
-
-            # ----- SELL LOGIC -----
-            if "SELL" in signal and held_qty > 0:
-                api.submit_order(symbol=symbol, qty=held_qty, side="sell", type="market", time_in_force="day")
-                log.info(f"sold {held_qty} shares of {symbol} ({COMPANY_NAMES.get(symbol,symbol)})")
-                return
-
-        except Exception:
-            log.exception(f"order error for {symbol}")
 
 # ---------------- EXECUTE TRADING LOGIC ----------------
 def execute_trading_logic():
