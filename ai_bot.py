@@ -240,7 +240,7 @@ def run_bot():
         ]
 
         for t in triggers:
-            if abs((now - t).total_seconds()) < 30 and t not in already_ran: and t not in already_ran:
+            if abs((now - t).total_seconds()) < 30 and t not in already_ran:
                 try:
                     log.info(f"Triggering AI trading logic for scheduled time {t}")
                     execute_trading_logic()
@@ -276,5 +276,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT",5000))
     log.info("Starting Flask server on port %s", port)
     app.run(host="0.0.0.0", port=port)
+
 
 
