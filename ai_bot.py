@@ -171,21 +171,40 @@ def run_bot():
             execute_trading_logic()
         except Exception:
             log.exception("bot loop error")
-        time.sleep(900)
+        time.sleep(900)  # 15 minutes between cycles
 
 # ---------------- FLASK ----------------
 app = Flask(__name__)
+
 @app.route("/")
 def home():
     return "Deepseek AI Bot Online"
-@app.route("/trigger")
-# manual trigger endpoint
+
 @app.route("/trigger")
 def trigger():
-    start_math_thread_once(execute_trading_logic)  # will only start one thread
+    """
+    manual trigger endpoint
+    runs a single execution if nothing is running
+    """
+    global _math_thread_running
+
+    if not _math_thread_running:
+        def run_once():
+            try:
+                execute_trading_logic()
+            finally:
+                global _math_thread_running
+                _math_thread_running = False  # reset after finish
+
+        threading.Thread(target=run_once, daemon=True).start()
+        _math_thread_running = True
+        log.info("manual trigger started")
+    else:
+        log.info("math thread already running, ignoring trigger")
+
     return "manual trigger fired"
 
-# entry point
+# ---------------- ENTRY POINT ----------------
 if __name__ == "__main__":
     sample_symbols = ["AAPL","TSLA","GOOG"]
     summaries = fetch_math_summaries()
