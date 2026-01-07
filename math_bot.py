@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import alpaca_trade_api as tradeapi
 from dotenv import load_dotenv
+from flask import Flask
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -24,7 +25,6 @@ TICKERS = [
 MARKET_OPEN = datetime.strptime("09:30", "%H:%M").time()
 MARKET_CLOSE = datetime.strptime("16:00", "%H:%M").time()
 INTRADAY_TTL = 30  # seconds
-
 STATE_FILE = "trade_state.json"
 
 # ---------------- LOGGING ----------------
@@ -52,7 +52,7 @@ def submit_order(symbol, qty, side="buy", order_type="market"):
         order = api.submit_order(symbol=symbol, qty=qty, side=side, type=order_type, time_in_force="day")
         log.info(f"submitted {side} order for {symbol} qty {qty}")
         return order
-    except Exception as e:
+    except Exception:
         log.exception(f"failed to submit order for {symbol}")
         return None
 
@@ -159,11 +159,9 @@ def compute_math_score(symbol):
     if not tech:
         return 50
 
-    # regime-aware weighting based on trend strength (ma difference)
     ma_diff = tech['ma_short'] - tech['ma_long'] if tech['ma_short'] and tech['ma_long'] else 0
-    trending = abs(ma_diff) > 0  # simple regime: trending if MA difference non-zero
+    trending = abs(ma_diff) > 0
 
-    # optimal weights
     if trending:
         weights = {"trend":0.45, "rsi":0.30, "vol":0.20, "atr":0.05}
     else:
@@ -172,7 +170,7 @@ def compute_math_score(symbol):
     ma_score = 100 if tech['ma_short'] > tech['ma_long'] else 0
     rsi_score = 100 - tech['rsi'] if tech['rsi'] is not None else 50
     vol_score = min(max(tech['vol_change'],0),100)
-    atr_score = tech['atr'] if tech['atr'] else 50  # simple scaling
+    atr_score = tech['atr'] if tech['atr'] else 50
     atr_score = min(max(atr_score,0),100)
 
     score = (ma_score*weights["trend"] +
@@ -199,12 +197,12 @@ def execute_trades():
     for symbol in TICKERS:
         summary = build_summary(symbol)
         score = summary["math_score"]
-        if score > 70:  # example: buy if score high
+        if score > 70:
             submit_order(symbol, qty=1, side="buy")
-        elif score < 30:  # sell if score low
+        elif score < 30:
             submit_order(symbol, qty=1, side="sell")
 
-# ---------------- MAIN LOOP ----------------
+# ---------------- BOT LOOP ----------------
 def bot_loop():
     while True:
         now = datetime.now()
@@ -213,10 +211,9 @@ def bot_loop():
             time.sleep(60)
             continue
 
-        # only trade at start of hour
         if STATE.get("last_run"):
             last_run = datetime.strptime(STATE["last_run"], "%Y-%m-%d %H:%M:%S")
-            if last_run.hour == now.hour:
+            if (now - last_run).total_seconds() < 1800:  # 30 min cooldown
                 time.sleep(60)
                 continue
 
@@ -224,12 +221,19 @@ def bot_loop():
         execute_trades()
         STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
         save_state(STATE)
-        log.info("cycle complete, sleeping until next hour")
-        # sleep until next hour
-        sleep_seconds = 1800 - (now.minute % 30)*60 - now.second
-        time.sleep(sleep_seconds)
+        log.info("cycle complete, sleeping until next cycle")
+        time.sleep(1800)  # sleep 30 mins
 
-# ---------------- START ----------------
+# ---------------- FLASK FOR RENDER ----------------
+app = Flask(__name__)
+
+@app.route("/health")
+def health():
+    return "ok", 200
+
 if __name__ == "__main__":
-    log.info("starting math bot")
-    bot_loop()
+    # start bot in background thread
+    threading.Thread(target=bot_loop, daemon=True).start()
+    # run flask for render to see port
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
