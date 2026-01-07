@@ -61,6 +61,24 @@ TICKERS = [
 
 SECTORS = {sym: "unknown" for sym in TICKERS}  # ai can still use sector field
 
+# ---------------- GLOBAL THREAD CONTROL ----------------
+_math_thread_running = False
+_math_thread = None
+
+def start_math_thread_once(target_func):
+    """
+    trigger-safe starter: only starts one thread per function
+    """
+    global _math_thread_running, _math_thread
+    if _math_thread_running:
+        log.info("math thread already running, ignoring trigger")
+        return
+    _math_thread_running = True
+    _math_thread = threading.Thread(target=target_func, daemon=True)
+    _math_thread.start()
+    log.info("math thread started")
+
+
 # ---------------- FETCH MATH ----------------
 def fetch_math_summaries(timeout=20):
     result = {}
@@ -166,21 +184,24 @@ app = Flask(__name__)
 def home():
     return "Deepseek AI Bot Online"
 @app.route("/trigger")
+# manual trigger endpoint
+@app.route("/trigger")
 def trigger():
-    threading.Thread(target=execute_trading_logic).start()
+    start_math_thread_once(execute_trading_logic)  # will only start one thread
     return "manual trigger fired"
 
-# ---------------- ENTRY POINT ----------------
+# entry point
 if __name__ == "__main__":
     sample_symbols = ["AAPL","TSLA","GOOG"]
-    # system check purely for math scores now
     summaries = fetch_math_summaries()
     for s in summaries:
         log.info(f"SYSTEM CHECK: {s['symbol']} -> math_score: {s['math_score']}")
-    threading.Thread(target=run_bot, daemon=True).start()
+    start_math_thread_once(run_bot)  # run main bot loop safely
     port = int(os.getenv("PORT", 5000))
     log.info(f"starting flask on {port}")
     app.run(host="0.0.0.0", port=port)
+
+
 
 
 
