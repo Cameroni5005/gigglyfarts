@@ -207,43 +207,70 @@ def position_size(price, score):
 
 # ================== EXECUTION ==================
 def run_cycle(ignore_market_hours=False):
+    log.info("starting run cycle")
+
     if not ignore_market_hours and not market_is_open():
-        log.info("market closed, skipping")
+        log.info("market closed, skipping cycle")
         return []
 
     executed = []
 
     for symbol in TICKERS:
+        log.info(f"checking {symbol}")
+
         res = analyze(symbol)
         if not res:
+            log.warning(f"{symbol}: no analysis result, skipping")
             continue
 
         score = res["score"]
         price = res["price"]
 
+        log.info(f"{symbol} | price={price:.2f} | score={score:.1f}")
+
         if score > 75:
             qty = position_size(price, score)
+            log.info(f"🚀 BUY SIGNAL {symbol} | qty={qty} | score={score:.1f}")
             submit_order(symbol, qty, "buy")
-            executed.append({"symbol": symbol, "action": "buy", "score": score})
+            executed.append({
+                "symbol": symbol,
+                "action": "buy",
+                "score": score
+            })
 
         elif score < 25:
             qty = position_size(price, score)
+            log.info(f"🧨 SELL SIGNAL {symbol} | qty={qty} | score={score:.1f}")
             submit_order(symbol, qty, "sell")
-            executed.append({"symbol": symbol, "action": "sell", "score": score})
+            executed.append({
+                "symbol": symbol,
+                "action": "sell",
+                "score": score
+            })
+
+        else:
+            log.info(f"{symbol}: no trade (score in dead zone)")
 
     save_state(STATE)
+    log.info(f"cycle finished | trades executed: {len(executed)}")
+
+    if executed:
+        log.info(f"executed trades: {executed}")
+    else:
+        log.info("no trades this cycle, market boring as hell")
+
     return executed
+
 
 # ================== FLASK ==================
 app = Flask(__name__)
 
 @app.route("/trigger", methods=["GET"])
 def trigger():
-    log.info("manual trigger")
-    executed = run_cycle(ignore_market_hours=True)
-    return jsonify({
-        "market_open": market_is_open(),
-        "executed": executed
+    log.info("🔥 MANUAL TRIGGER FIRED")
+    executed = execute_trades(ignore_market_hours=True)
+    log.info(f"trigger results: {executed}")
+    return jsonify({"executed": executed})
     })
 
 # ================== LOOP ==================
