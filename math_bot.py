@@ -2,9 +2,10 @@ import os
 import time
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import yfinance as yf
 import alpaca_trade_api as tradeapi
+from flask import Flask, jsonify
 from dotenv import load_dotenv
 
 # ---------------- CONFIG ----------------
@@ -34,7 +35,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
-    return {"last_run": None, "positions": {}}
+    return {"positions": {}}
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
@@ -50,7 +51,7 @@ def submit_order(symbol, qty, side="buy", order_type="market"):
         order = api.submit_order(symbol=symbol, qty=qty, side=side, type=order_type, time_in_force="day")
         log.info(f"submitted {side} order for {symbol} qty {qty}")
         return order
-    except Exception as e:
+    except Exception:
         log.exception(f"failed to submit order for {symbol}")
         return None
 
@@ -95,14 +96,11 @@ def compute_technical(symbol):
 
     now = datetime.now().time()
     if now < datetime.strptime("10:30","%H:%M").time():
-        ma_short_len = 5
-        ma_long_len = 15
+        ma_short_len, ma_long_len = 5, 15
     elif now < datetime.strptime("14:30","%H:%M").time():
-        ma_short_len = 10
-        ma_long_len = 20
+        ma_short_len, ma_long_len = 10, 20
     else:
-        ma_short_len = 7
-        ma_long_len = 15
+        ma_short_len, ma_long_len = 7, 15
 
     ma_short = sum(closes[-ma_short_len:])/ma_short_len if len(closes)>=ma_short_len else None
     ma_long = sum(closes[-ma_long_len:])/ma_long_len if len(closes)>=ma_long_len else None
@@ -126,11 +124,8 @@ def compute_technical(symbol):
     if len(data)>1:
         tr_list = []
         for i in range(1,len(data)):
-            h = data[i]['high']
-            l = data[i]['low']
-            pc = data[i-1]['close']
-            tr = max(h-l, abs(h-pc), abs(l-pc))
-            tr_list.append(tr)
+            h, l, pc = data[i]['high'], data[i]['low'], data[i-1]['close']
+            tr_list.append(max(h-l, abs(h-pc), abs(l-pc)))
         atr = sum(tr_list[-14:])/14 if len(tr_list)>=14 else tr_list[-1]
 
     last = closes[-1]
@@ -191,6 +186,10 @@ def build_summary(symbol):
 
 # ---------------- EXECUTION ----------------
 def execute_trades():
+    if datetime.now().time() < MARKET_OPEN or datetime.now().time() > MARKET_CLOSE:
+        log.info("market closed, skipping trades")
+        return
+
     for symbol in TICKERS:
         summary = build_summary(symbol)
         score = summary["math_score"]
@@ -199,29 +198,22 @@ def execute_trades():
         elif score < 30:
             submit_order(symbol, qty=1, side="sell")
 
-# ---------------- MAIN LOOP ----------------
-def bot_loop():
-    while True:
-        now = datetime.now()
-        if now.time() < MARKET_OPEN or now.time() > MARKET_CLOSE:
-            log.info("market closed, sleeping")
-            time.sleep(60)
-            continue
+# ---------------- FLASK WEB ----------------
+app = Flask(__name__)
 
-        if STATE.get("last_run"):
-            last_run = datetime.strptime(STATE["last_run"], "%Y-%m-%d %H:%M:%S")
-            if (now - last_run) < timedelta(minutes=30):
-                time.sleep(60)
-                continue
+@app.route("/")
+def index():
+    return jsonify({"status":"ok", "message":"math bot running"}), 200
 
-        log.info("running math bot cycle")
-        execute_trades()
-        STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
-        save_state(STATE)
-        log.info("cycle complete, sleeping 30 minutes")
-        time.sleep(1800)
+@app.route("/trigger")
+def trigger():
+    execute_trades()
+    STATE["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_state(STATE)
+    return jsonify({"status":"ok", "message":"manual trade cycle executed"}), 200
 
 # ---------------- START ----------------
 if __name__ == "__main__":
-    log.info("starting math bot")
-    bot_loop()
+    log.info("starting math bot web service")
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
