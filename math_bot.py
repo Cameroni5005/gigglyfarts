@@ -29,9 +29,11 @@ INTRADAY_TTL = 30  # seconds
 STATE_FILE = "trade_state.json"
 
 # risk settings
-ACCOUNT_EQUITY = 100000  # total paper account size
-RISK_PCT_PER_TRADE = 0.1  # fraction of trade amount relative to target ~10k per trade
-DAILY_MAX_LOSS_PCT = 0.03  # stop trading if losing 3% equity
+ACCOUNT_EQUITY = 100000
+RISK_PCT_PER_TRADE = 0.01  # 1% of equity per trade
+DAILY_MAX_LOSS_PCT = 0.03  # stop trading if losing 3% of equity
+TARGET_AVG_TRADE = 10000  # average size for stable stocks
+STOP_MULTIPLIER = 2  # ATR multiple for stop-loss
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -142,14 +144,12 @@ def normalize_indicator(value, history):
 # ---------------- SMART TECHNICAL & RISK ----------------
 def compute_technical_smart(symbol):
     data = get_intraday_data(symbol)
-    if not data:
+    if not data or len(data)<30:
         return None
     closes = [d["close"] for d in data]
     highs = [d["high"] for d in data]
     lows = [d["low"] for d in data]
     vols = [d["volume"] for d in data]
-    if len(closes)<30:
-        return None
 
     # MACD trend
     macd = (macd_value(closes,8,21) + macd_value(closes,12,26))/2
@@ -211,12 +211,12 @@ def compute_technical_smart(symbol):
     }
 
 # ---------------- POSITION SIZING ----------------
-def calculate_position_size(price, atr, target_trade_amount=10000, stop_multiplier=2):
-    # ATR-based risk: move stops by stop_multiplier*ATR
-    risk_per_share = atr * stop_multiplier
-    if risk_per_share==0:
-        return max(1,int(target_trade_amount/price))
-    qty = int(target_trade_amount / price)
+def calculate_position_size(price, atr, score):
+    # dynamically scale trade based on score & volatility
+    base_qty = int(TARGET_AVG_TRADE / price)
+    risk_factor = max(0.2, min(1.5, 1/atr))  # higher ATR = smaller size
+    score_factor = 0.5 + score/100  # higher score = bigger size
+    qty = int(base_qty * risk_factor * score_factor)
     return max(1, qty)
 
 # ---------------- EXECUTION ----------------
@@ -241,11 +241,11 @@ def execute_trades(ignore_market_hours=False):
         atr = summary["atr"] or 1  # fallback
 
         if score>75:
-            qty = calculate_position_size(price, atr, target_trade_amount=10000)
+            qty = calculate_position_size(price, atr, score)
             submit_order(symbol, qty, "buy")
             action="buy"
         elif score<25:
-            qty = calculate_position_size(price, atr, target_trade_amount=10000)
+            qty = calculate_position_size(price, atr, score)
             submit_order(symbol, qty, "sell")
             action="sell"
 
@@ -286,6 +286,6 @@ def bot_loop():
 
 # ---------------- START ----------------
 if __name__=="__main__":
-    log.info("starting smarter risk-based bot as webservice")
+    log.info("starting improved risk-aware bot as webservice")
     threading.Thread(target=bot_loop,daemon=True).start()
     app.run(host="0.0.0.0",port=int(os.getenv("PORT",10000)))
