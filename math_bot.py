@@ -28,6 +28,11 @@ MARKET_CLOSE = datetime.strptime("16:00", "%H:%M").time()
 INTRADAY_TTL = 30  # seconds
 STATE_FILE = "trade_state.json"
 
+# risk settings
+ACCOUNT_EQUITY = 100000  # total paper account size
+RISK_PCT_PER_TRADE = 0.1  # fraction of trade amount relative to target ~10k per trade
+DAILY_MAX_LOSS_PCT = 0.03  # stop trading if losing 3% equity
+
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -37,7 +42,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
-    return {"last_run": None, "positions": {}, "histories": {}}
+    return {"last_run": None, "positions": {}, "histories": {}, "daily_loss": 0.0}
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
@@ -57,7 +62,7 @@ def submit_order(symbol, qty, side="buy", order_type="market"):
         log.exception(f"failed to submit order for {symbol}")
         return None
 
-# ---------------- DATA INGESTION ----------------
+# ---------------- DATA ----------------
 INTRADAY_CACHE = {}
 
 def get_intraday_data(symbol, retries=3, delay=2):
@@ -87,7 +92,7 @@ def get_intraday_data(symbol, retries=3, delay=2):
     log.warning(f"failed to fetch intraday data for {symbol}")
     return []
 
-# ---------------- TECHNICAL CALCULATIONS ----------------
+# ---------------- INDICATORS ----------------
 def ema(values, period):
     if not values or len(values) < period:
         return None
@@ -134,6 +139,7 @@ def normalize_indicator(value, history):
     stdev = statistics.pstdev(history) if len(history)>1 else 0
     return z_clip(value, mean, stdev)
 
+# ---------------- SMART TECHNICAL & RISK ----------------
 def compute_technical_smart(symbol):
     data = get_intraday_data(symbol)
     if not data:
@@ -142,8 +148,7 @@ def compute_technical_smart(symbol):
     highs = [d["high"] for d in data]
     lows = [d["low"] for d in data]
     vols = [d["volume"] for d in data]
-
-    if len(closes) < 30:
+    if len(closes)<30:
         return None
 
     # MACD trend
@@ -156,13 +161,13 @@ def compute_technical_smart(symbol):
     # RSI
     rsi_v = rsi(closes)
 
-    # volume change
+    # volume
     vol_recent = vols[-120:] if len(vols)>=120 else vols
     vol_med = statistics.median(vol_recent) if vol_recent else 0
     vol_now = vols[-1] if vols else 0
     vol_change = (vol_now-vol_med) if vol_med!=0 else 0
 
-    # get historical values from STATE
+    # historical cache
     histories = STATE.get("histories", {}).get(symbol, {})
     macd_hist = histories.get("macd",[])
     rsi_hist = histories.get("rsi",[])
@@ -200,13 +205,19 @@ def compute_technical_smart(symbol):
     return {
         "price": closes[-1],
         "score": score,
-        "trend_strength": trend_strength,
-        "macd": macd,
-        "rsi": rsi_v,
         "atr": atr,
-        "vol_change": vol_change,
+        "trend_strength": trend_strength,
         "weights": {"trend": w_trend,"rsi":w_rsi,"vol":w_vol,"atr":w_atr}
     }
+
+# ---------------- POSITION SIZING ----------------
+def calculate_position_size(price, atr, target_trade_amount=10000, stop_multiplier=2):
+    # ATR-based risk: move stops by stop_multiplier*ATR
+    risk_per_share = atr * stop_multiplier
+    if risk_per_share==0:
+        return max(1,int(target_trade_amount/price))
+    qty = int(target_trade_amount / price)
+    return max(1, qty)
 
 # ---------------- EXECUTION ----------------
 def execute_trades(ignore_market_hours=False):
@@ -215,19 +226,29 @@ def execute_trades(ignore_market_hours=False):
         log.info("market closed, skipping trades")
         return []
 
+    if STATE.get("daily_loss",0)/ACCOUNT_EQUITY >= DAILY_MAX_LOSS_PCT:
+        log.info("daily max loss reached, skipping trades")
+        return []
+
     executed=[]
     for symbol in TICKERS:
         summary = compute_technical_smart(symbol)
         if not summary:
             continue
         score = summary["score"]
-        action = None
+        action=None
+        price = summary["price"]
+        atr = summary["atr"] or 1  # fallback
+
         if score>75:
-            submit_order(symbol,1,"buy")
+            qty = calculate_position_size(price, atr, target_trade_amount=10000)
+            submit_order(symbol, qty, "buy")
             action="buy"
         elif score<25:
-            submit_order(symbol,1,"sell")
+            qty = calculate_position_size(price, atr, target_trade_amount=10000)
+            submit_order(symbol, qty, "sell")
             action="sell"
+
         executed.append({"symbol":symbol,"score":score,"action":action})
     save_state(STATE)
     return executed
@@ -252,11 +273,11 @@ def bot_loop():
 
         if STATE.get("last_run"):
             last_run = datetime.strptime(STATE["last_run"],"%Y-%m-%d %H:%M:%S")
-            if last_run.hour == now.hour:
+            if last_run.hour==now.hour:
                 time.sleep(60)
                 continue
 
-        log.info("running scheduled bot cycle")
+        log.info("running bot cycle")
         execute_trades()
         STATE["last_run"]=now.strftime("%Y-%m-%d %H:%M:%S")
         save_state(STATE)
@@ -265,6 +286,6 @@ def bot_loop():
 
 # ---------------- START ----------------
 if __name__=="__main__":
-    log.info("starting smarter math bot as webservice")
+    log.info("starting smarter risk-based bot as webservice")
     threading.Thread(target=bot_loop,daemon=True).start()
     app.run(host="0.0.0.0",port=int(os.getenv("PORT",10000)))
