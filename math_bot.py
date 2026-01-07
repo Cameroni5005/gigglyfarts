@@ -2,16 +2,12 @@ import os
 import time
 import threading
 import logging
-import requests
+import yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
 
 # ---------------- CONFIG ----------------
 load_dotenv()
-
-TWELVEDATA_KEY = os.getenv("TWELVEDATA_KEY")
-if not TWELVEDATA_KEY:
-    raise SystemExit("missing env var: TWELVEDATA_KEY")
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -29,55 +25,6 @@ INTRADAY_CACHE = {}
 INTRADAY_TTL = 30  # seconds
 
 # ---------------- HELPERS ----------------
-def safe_json(r):
-    try:
-        return r.json()
-    except ValueError:
-        return {}
-
-# ---------------- TWELVEDATA ----------------
-TWELVE_RATE_LIMIT = 8
-TWELVE_WINDOW = 61
-_twelve_calls = []
-_twelve_lock = threading.Lock()
-
-def twelve_rate_limit():
-    global _twelve_calls
-    with _twelve_lock:
-        now = time.time()
-        _twelve_calls = [t for t in _twelve_calls if now - t < TWELVE_WINDOW]
-        if len(_twelve_calls) >= TWELVE_RATE_LIMIT:
-            sleep_for = TWELVE_WINDOW - (now - _twelve_calls[0]) + 0.1
-            log.info(f"TwelveData rate limit hit, sleeping {sleep_for:.1f}s")
-            time.sleep(sleep_for)
-        _twelve_calls.append(time.time())
-
-def fetch_twelvedata_bars(symbol, interval="1min", limit=200):
-    twelve_rate_limit()
-    r = requests.get(
-        "https://api.twelvedata.com/time_series",
-        params={
-            "symbol": symbol,
-            "interval": interval,
-            "outputsize": limit,
-            "apikey": TWELVEDATA_KEY
-        },
-        timeout=8
-    )
-    data = safe_json(r)
-    if not data or "values" not in data:
-        return []
-    return [
-        {
-            "time": v["datetime"],
-            "close": float(v["close"]),
-            "high": float(v["high"]),
-            "low": float(v["low"]),
-            "volume": float(v["volume"]),
-        }
-        for v in reversed(data["values"])
-    ]
-
 def get_intraday_data(symbol):
     now = time.time()
     cached = INTRADAY_CACHE.get(symbol)
@@ -85,10 +32,23 @@ def get_intraday_data(symbol):
         data, ts = cached
         if now - ts < INTRADAY_TTL:
             return data
-    bars = fetch_twelvedata_bars(symbol)
-    if bars:
-        INTRADAY_CACHE[symbol] = (bars, now)
-    return bars
+    try:
+        df = yf.download(tickers=symbol, period="1d", interval="1m", progress=False)
+        bars = []
+        for idx, row in df.iterrows():
+            bars.append({
+                "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
+                "close": float(row["Close"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "volume": float(row["Volume"]),
+            })
+        if bars:
+            INTRADAY_CACHE[symbol] = (bars, now)
+        return bars
+    except Exception:
+        log.exception(f"yfinance fetch failed for {symbol}")
+        return []
 
 # ---------------- TECHNICAL CALCULATIONS ----------------
 def compute_technical(symbol):
@@ -190,25 +150,25 @@ def get_all_summaries(tickers):
     return summaries
 
 # ---------------- THREAD CONTROL ----------------
-_twelve_thread_running = False
-_twelve_thread = None
+_yf_thread_running = False
+_yf_thread = None
 
-def _twelve_thread_loop():
+def _yf_thread_loop():
     while True:
         get_all_summaries(TICKERS)
-        time.sleep(1)  # adjust polling frequency if needed
+        time.sleep(60)  # adjust polling frequency if needed
 
-def start_twelvedata_thread():
-    global _twelve_thread_running, _twelve_thread
-    if _twelve_thread_running:
-        log.info("twelvedata thread already running, ignoring trigger")
+def start_yf_thread():
+    global _yf_thread_running, _yf_thread
+    if _yf_thread_running:
+        log.info("yfinance thread already running, ignoring trigger")
         return
-    _twelve_thread_running = True
-    _twelve_thread = threading.Thread(target=_twelve_thread_loop, daemon=True)
-    _twelve_thread.start()
-    log.info("twelvedata thread started")
+    _yf_thread_running = True
+    _yf_thread = threading.Thread(target=_yf_thread_loop, daemon=True)
+    _yf_thread.start()
+    log.info("yfinance thread started")
 
 # ---------------- MAIN BLOCK ----------------
 if __name__ == "__main__":
     log.info("script loaded but not triggered")
-    # nothing runs until you call start_twelvedata_thread()
+    # nothing runs until you call start_yf_thread()
