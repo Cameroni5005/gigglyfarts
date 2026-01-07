@@ -1,13 +1,11 @@
 import os
 import time
 import json
-import threading
 import logging
 from datetime import datetime, timedelta
 import yfinance as yf
 import alpaca_trade_api as tradeapi
 from dotenv import load_dotenv
-from flask import Flask
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -52,7 +50,7 @@ def submit_order(symbol, qty, side="buy", order_type="market"):
         order = api.submit_order(symbol=symbol, qty=qty, side=side, type=order_type, time_in_force="day")
         log.info(f"submitted {side} order for {symbol} qty {qty}")
         return order
-    except Exception:
+    except Exception as e:
         log.exception(f"failed to submit order for {symbol}")
         return None
 
@@ -173,11 +171,10 @@ def compute_math_score(symbol):
     atr_score = tech['atr'] if tech['atr'] else 50
     atr_score = min(max(atr_score,0),100)
 
-    score = (ma_score*weights["trend"] +
-             rsi_score*weights["rsi"] +
-             vol_score*weights["vol"] +
-             atr_score*weights["atr"])
-    return score
+    return (ma_score*weights["trend"] +
+            rsi_score*weights["rsi"] +
+            vol_score*weights["vol"] +
+            atr_score*weights["atr"])
 
 # ---------------- COMBINED ----------------
 def build_summary(symbol):
@@ -202,7 +199,7 @@ def execute_trades():
         elif score < 30:
             submit_order(symbol, qty=1, side="sell")
 
-# ---------------- BOT LOOP ----------------
+# ---------------- MAIN LOOP ----------------
 def bot_loop():
     while True:
         now = datetime.now()
@@ -213,7 +210,7 @@ def bot_loop():
 
         if STATE.get("last_run"):
             last_run = datetime.strptime(STATE["last_run"], "%Y-%m-%d %H:%M:%S")
-            if (now - last_run).total_seconds() < 1800:  # 30 min cooldown
+            if (now - last_run) < timedelta(minutes=30):
                 time.sleep(60)
                 continue
 
@@ -221,19 +218,10 @@ def bot_loop():
         execute_trades()
         STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
         save_state(STATE)
-        log.info("cycle complete, sleeping until next cycle")
-        time.sleep(1800)  # sleep 30 mins
+        log.info("cycle complete, sleeping 30 minutes")
+        time.sleep(1800)
 
-# ---------------- FLASK FOR RENDER ----------------
-app = Flask(__name__)
-
-@app.route("/health")
-def health():
-    return "ok", 200
-
+# ---------------- START ----------------
 if __name__ == "__main__":
-    # start bot in background thread
-    threading.Thread(target=bot_loop, daemon=True).start()
-    # run flask for render to see port
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    log.info("starting math bot")
+    bot_loop()
