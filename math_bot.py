@@ -1,12 +1,13 @@
 import os
 import time
 import json
+import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import yfinance as yf
 import alpaca_trade_api as tradeapi
-from flask import Flask, jsonify
 from dotenv import load_dotenv
+from flask import Flask, jsonify
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -35,7 +36,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
-    return {"positions": {}}
+    return {"last_run": None, "positions": {}}
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
@@ -90,17 +91,19 @@ def compute_technical(symbol):
     data = get_intraday_data(symbol)
     if not data:
         return None
-
     closes = [d["close"] for d in data]
     volumes = [d["volume"] for d in data]
 
     now = datetime.now().time()
     if now < datetime.strptime("10:30","%H:%M").time():
-        ma_short_len, ma_long_len = 5, 15
+        ma_short_len = 5
+        ma_long_len = 15
     elif now < datetime.strptime("14:30","%H:%M").time():
-        ma_short_len, ma_long_len = 10, 20
+        ma_short_len = 10
+        ma_long_len = 20
     else:
-        ma_short_len, ma_long_len = 7, 15
+        ma_short_len = 7
+        ma_long_len = 15
 
     ma_short = sum(closes[-ma_short_len:])/ma_short_len if len(closes)>=ma_short_len else None
     ma_long = sum(closes[-ma_long_len:])/ma_long_len if len(closes)>=ma_long_len else None
@@ -124,8 +127,11 @@ def compute_technical(symbol):
     if len(data)>1:
         tr_list = []
         for i in range(1,len(data)):
-            h, l, pc = data[i]['high'], data[i]['low'], data[i-1]['close']
-            tr_list.append(max(h-l, abs(h-pc), abs(l-pc)))
+            h = data[i]['high']
+            l = data[i]['low']
+            pc = data[i-1]['close']
+            tr = max(h-l, abs(h-pc), abs(l-pc))
+            tr_list.append(tr)
         atr = sum(tr_list[-14:])/14 if len(tr_list)>=14 else tr_list[-1]
 
     last = closes[-1]
@@ -185,35 +191,60 @@ def build_summary(symbol):
     }
 
 # ---------------- EXECUTION ----------------
-def execute_trades():
-    if datetime.now().time() < MARKET_OPEN or datetime.now().time() > MARKET_CLOSE:
-        log.info("market closed, skipping trades")
-        return
+def execute_trades(ignore_market_hours=False):
+    now = datetime.now().time()
+    if not ignore_market_hours and (now < MARKET_OPEN or now > MARKET_CLOSE):
+        log.info("market closed, skipping trade execution")
+        return []
 
+    executed = []
     for symbol in TICKERS:
         summary = build_summary(symbol)
         score = summary["math_score"]
+        action = None
         if score > 70:
             submit_order(symbol, qty=1, side="buy")
+            action = "buy"
         elif score < 30:
             submit_order(symbol, qty=1, side="sell")
+            action = "sell"
+        executed.append({ "symbol": symbol, "score": score, "action": action })
+    return executed
 
-# ---------------- FLASK WEB ----------------
+# ---------------- FLASK ----------------
 app = Flask(__name__)
 
-@app.route("/")
-def index():
-    return jsonify({"status":"ok", "message":"math bot running"}), 200
-
-@app.route("/trigger")
+@app.route("/trigger", methods=["GET"])
 def trigger():
-    execute_trades()
-    STATE["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_state(STATE)
-    return jsonify({"status":"ok", "message":"manual trade cycle executed"}), 200
+    log.info("trigger requested")
+    executed = execute_trades(ignore_market_hours=True)
+    return jsonify({ "executed": executed })
+
+# ---------------- MAIN LOOP ----------------
+def bot_loop():
+    while True:
+        now = datetime.now()
+        if now.time() < MARKET_OPEN or now.time() > MARKET_CLOSE:
+            log.info("market closed, sleeping")
+            time.sleep(60)
+            continue
+
+        if STATE.get("last_run"):
+            last_run = datetime.strptime(STATE["last_run"], "%Y-%m-%d %H:%M:%S")
+            if last_run.hour == now.hour:
+                time.sleep(60)
+                continue
+
+        log.info("running scheduled math bot cycle")
+        execute_trades()
+        STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        save_state(STATE)
+
+        sleep_seconds = 1800 - (now.minute % 30)*60 - now.second
+        time.sleep(sleep_seconds)
 
 # ---------------- START ----------------
 if __name__ == "__main__":
-    log.info("starting math bot web service")
-    port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    log.info("starting math bot as webservice")
+    threading.Thread(target=bot_loop, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
