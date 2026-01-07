@@ -268,10 +268,10 @@ app = Flask(__name__)
 @app.route("/trigger", methods=["GET"])
 def trigger():
     log.info("🔥 MANUAL TRIGGER FIRED")
-    executed = execute_trades(ignore_market_hours=True)
+    executed = run_cycle(ignore_market_hours=True)
     log.info(f"trigger results: {executed}")
     return jsonify({"executed": executed})
-    })
+
 
 # ================== LOOP ==================
 def bot_loop():
