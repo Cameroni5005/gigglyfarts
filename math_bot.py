@@ -50,6 +50,17 @@ def get_intraday_data(symbol):
         log.exception(f"yfinance fetch failed for {symbol}")
         return []
 
+
+def fetch_ticker(ticker, retries=3, delay=2):
+    for _ in range(retries):
+        try:
+            data = yf.download(ticker, period="1d")
+            if not data.empty:
+                return data
+        except Exception:
+            time.sleep(delay)
+    return None
+
 # ---------------- TECHNICAL CALCULATIONS ----------------
 def compute_technical(symbol):
     data = get_intraday_data(symbol)
