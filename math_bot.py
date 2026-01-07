@@ -226,7 +226,7 @@ def bot_loop():
         save_state(STATE)
         log.info("cycle complete, sleeping until next hour")
         # sleep until next hour
-        sleep_seconds = 3600 - now.minute*60 - now.second
+        sleep_seconds = 1800 - (now.minute % 30)*60 - now.second
         time.sleep(sleep_seconds)
 
 # ---------------- START ----------------
