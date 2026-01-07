@@ -10,6 +10,7 @@ from datetime import datetime, time as dtime
 from logging.handlers import RotatingFileHandler
 
 from math_bot import get_all_summaries  # only math
+from twelvedata_script import start_twelvedata_thread 
 
 # ---------------- BASIC LOGGING ----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -181,3 +182,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info(f"starting flask on {port}")
     app.run(host="0.0.0.0", port=port)
+
