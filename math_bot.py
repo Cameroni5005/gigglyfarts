@@ -189,8 +189,26 @@ def get_all_summaries(tickers):
             log.exception(f"error building summary for {sym}")
     return summaries
 
-# ---------------- TEST RUN ----------------
+# ---------------- THREAD CONTROL ----------------
+_twelve_thread_running = False
+_twelve_thread = None
+
+def _twelve_thread_loop():
+    while True:
+        get_all_summaries(TICKERS)
+        time.sleep(1)  # adjust polling frequency if needed
+
+def start_twelvedata_thread():
+    global _twelve_thread_running, _twelve_thread
+    if _twelve_thread_running:
+        log.info("twelvedata thread already running, ignoring trigger")
+        return
+    _twelve_thread_running = True
+    _twelve_thread = threading.Thread(target=_twelve_thread_loop, daemon=True)
+    _twelve_thread.start()
+    log.info("twelvedata thread started")
+
+# ---------------- MAIN BLOCK ----------------
 if __name__ == "__main__":
-    summaries = get_all_summaries(TICKERS)
-    for s in summaries:
-        log.info(s)
+    log.info("script loaded but not triggered")
+    # nothing runs until you call start_twelvedata_thread()
