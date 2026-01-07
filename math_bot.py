@@ -20,7 +20,7 @@ APCA_URL = os.getenv("APCA_URL")
 TICKERS = [
     "AAPL","MSFT","AMZN","NVDA","GOOG","META","TSLA","NFLX","DIS","PYPL",
     "INTC","CSCO","ADBE","ORCL","IBM","CRM","AMD","UBER","LYFT","SHOP",
-    "BABA","NKE","SBUX","QCOM","PEP","KO"
+    "BABA","NKE","SBUX","QCOM","PEP","KO", "JPM", "BA"
 ]
 
 MARKET_OPEN = datetime.strptime("09:30", "%H:%M").time()
