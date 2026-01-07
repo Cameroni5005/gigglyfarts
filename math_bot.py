@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 import logging
@@ -31,68 +32,25 @@ def get_intraday_data(symbol):
         data, ts = cached
         if now - ts < INTRADAY_TTL:
             return data
-
     try:
-        df = yf.download(
-            tickers=symbol,
-            period="1d",
-            interval="1m",
-            progress=False
-        )
-
+        df = yf.download(tickers=symbol, period="1d", interval="1m", progress=False)
         bars = []
         for idx, row in df.iterrows():
             bars.append({
                 "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
-                "close": float(row["Close"].iloc[0]),
-                "high": float(row["High"].iloc[0]),
-                "low": float(row["Low"].iloc[0]),
-                "volume": float(row["Volume"].iloc[0]),
+                "close": float(row["Close"].iloc[0]) if hasattr(row["Close"], "iloc") else float(row["Close"]),
+                "high": float(row["High"].iloc[0]) if hasattr(row["High"], "iloc") else float(row["High"]),
+                "low": float(row["Low"].iloc[0]) if hasattr(row["Low"], "iloc") else float(row["Low"]),
+                "volume": float(row["Volume"].iloc[0]) if hasattr(row["Volume"], "iloc") else float(row["Volume"]),
             })
-
         if bars:
             INTRADAY_CACHE[symbol] = (bars, now)
         return bars
-
     except Exception:
         log.exception(f"yfinance fetch failed for {symbol}")
         return []
 
-# ---------------- TECHNICALS ----------------
-def compute_rsi(closes, period=14):
-    if len(closes) <= period:
-        return None
-
-    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-    gains = [max(d, 0) for d in deltas]
-    losses = [abs(min(d, 0)) for d in deltas]
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    for g, l in zip(gains[period:], losses[period:]):
-        avg_gain = (avg_gain * (period - 1) + g) / period
-        avg_loss = (avg_loss * (period - 1) + l) / period
-
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def compute_atr(data, period=14):
-    if len(data) < period + 1:
-        return None
-
-    trs = []
-    for i in range(1, len(data)):
-        h = data[i]["high"]
-        l = data[i]["low"]
-        pc = data[i - 1]["close"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-
-    return sum(trs[-period:]) / period
-
-# ---------------- CORE TECH ----------------
+# ---------------- TECHNICAL CALCULATIONS ----------------
 def compute_technical(symbol):
     data = get_intraday_data(symbol)
     if not data:
@@ -101,106 +59,129 @@ def compute_technical(symbol):
     closes = [d["close"] for d in data]
     volumes = [d["volume"] for d in data]
 
+    # dynamic moving average lengths based on time of day
     now = datetime.now().time()
-    if now < datetime.strptime("10:30", "%H:%M").time():
-        short, long = 5, 15
-    elif now < datetime.strptime("14:30", "%H:%M").time():
-        short, long = 10, 20
+    if now < datetime.strptime("10:30","%H:%M").time():
+        ma_short_len, ma_long_len = 5, 15
+    elif now < datetime.strptime("14:30","%H:%M").time():
+        ma_short_len, ma_long_len = 10, 20
     else:
-        short, long = 7, 15
+        ma_short_len, ma_long_len = 7, 15
 
-    if len(closes) < long:
-        return None
+    ma_short = sum(closes[-ma_short_len:])/ma_short_len if len(closes)>=ma_short_len else None
+    ma_long = sum(closes[-ma_long_len:])/ma_long_len if len(closes)>=ma_long_len else None
 
-    ema_short = sum(closes[-short:]) / short
-    ema_long = sum(closes[-long:]) / long
+    # RSI
+    rsi = None
+    period = 14
+    if len(closes) > period:
+        deltas = [closes[i]-closes[i-1] for i in range(1,len(closes))]
+        gains = [d if d>0 else 0 for d in deltas]
+        losses = [-d if d<0 else 0 for d in deltas]
+        avg_gain = sum(gains[:period])/period
+        avg_loss = sum(losses[:period])/period
+        for g,l in zip(gains[period:], losses[period:]):
+            avg_gain = (avg_gain*(period-1)+g)/period
+            avg_loss = (avg_loss*(period-1)+l)/period
+        rsi = 100 if avg_loss==0 else 0 if avg_gain==0 else 100-(100/(1+avg_gain/avg_loss))
 
-    rsi = compute_rsi(closes)
-    atr = compute_atr(data)
+    last = closes[-1]
+    prev = closes[-2] if len(closes)>1 else last
+    delta = last-prev
 
     vol_window = min(120, len(volumes))
-    avg_vol = sum(volumes[-vol_window:]) / vol_window
-    vol_change = ((volumes[-1] - avg_vol) / avg_vol) * 100 if avg_vol else 0
+    avg_vol = sum(volumes[-vol_window:])/vol_window if vol_window>0 else 0
+    vol_change = (volumes[-1]-avg_vol)/avg_vol*100 if avg_vol!=0 else 0
+
+    atr = None
+    if len(data)>1:
+        tr_list = []
+        for i in range(1,len(data)):
+            h, l, pc = data[i]['high'], data[i]['low'], data[i-1]['close']
+            tr = max(h-l, abs(h-pc), abs(l-pc))
+            tr_list.append(tr)
+        atr = sum(tr_list[-14:])/14 if len(tr_list)>=14 else tr_list[-1]
 
     return {
-        "price": closes[-1],
-        "ema_short": ema_short,
-        "ema_long": ema_long,
+        "price": last,
+        "change": delta,
+        "ma_short": ma_short,
+        "ma_long": ma_long,
         "rsi": rsi,
-        "atr": atr,
-        "vol_change": vol_change
+        "volume": volumes[-1],
+        "vol_change": vol_change,
+        "atr": atr
     }
 
 # ---------------- MATH SCORE ----------------
 def compute_math_score(symbol):
     tech = compute_technical(symbol)
     if not tech:
-        return None
+        return 50
 
-    # trend 35%
-    trend_score = 100 if tech["ema_short"] > tech["ema_long"] else 0
+    # weights for intraday decision making
+    # RSI: 40%, MA: 30%, Volume change: 30%
+    ma_score = 100 if tech['ma_short'] > tech['ma_long'] else 0
+    rsi_score = 100 - tech['rsi'] if tech['rsi'] is not None else 50
+    vol_score = min(max(tech['vol_change'],0),100)
 
-    # rsi 25% (ideal zone 30–70)
-    if tech["rsi"] is None:
-        rsi_score = 50
-    elif tech["rsi"] < 30:
-        rsi_score = 100
-    elif tech["rsi"] > 70:
-        rsi_score = 0
-    else:
-        rsi_score = 50
-
-    # volume 20%
-    vol_score = max(min(tech["vol_change"], 100), 0)
-
-    # atr sanity 20% (filters chop)
-    atr_score = 100 if tech["atr"] and tech["atr"] > 0 else 50
-
-    score = (
-        trend_score * 0.35 +
-        rsi_score * 0.25 +
-        vol_score * 0.20 +
-        atr_score * 0.20
-    )
-
-    return round(score, 2)
+    score = rsi_score*0.4 + ma_score*0.3 + vol_score*0.3
+    return score
 
 # ---------------- SUMMARY ----------------
-def build_summary(symbol):
+def build_combined_summary(symbol):
     tech = compute_technical(symbol)
-    if not tech:
-        return None
-
     return {
         "symbol": symbol,
-        "score": compute_math_score(symbol),
-        "price": tech["price"],
-        "rsi": tech["rsi"],
-        "atr": tech["atr"]
+        "math_score": compute_math_score(symbol),
+        "price": tech['price'] if tech else None,
+        "ma_short": tech['ma_short'] if tech else None,
+        "ma_long": tech['ma_long'] if tech else None,
+        "rsi": tech['rsi'] if tech else None,
+        "atr": tech['atr'] if tech else None
     }
 
-def scan_market():
-    results = []
-    for sym in TICKERS:
+def get_all_summaries(tickers):
+    summaries = []
+    for sym in tickers:
         try:
-            s = build_summary(sym)
-            if s:
-                results.append(s)
+            summaries.append(build_combined_summary(sym))
         except Exception:
-            log.exception(f"scan failed for {sym}")
-    return results
+            log.exception(f"error building summary for {sym}")
+    return summaries
 
-# ---------------- THREAD ----------------
-def market_loop():
+# ---------------- THREAD CONTROL ----------------
+_yf_thread_running = False
+_yf_thread = None
+
+def _yf_thread_loop():
     while True:
-        scans = scan_market()
-        scans.sort(key=lambda x: x["score"], reverse=True)
-        log.info(f"top picks: {scans[:5]}")
+        all_data = get_all_summaries(TICKERS)
+        log.info(f"updated math summaries for {len(all_data)} tickers")
         time.sleep(60)
 
-# ---------------- AUTO START ----------------
+def start_math_thread():
+    global _yf_thread_running, _yf_thread
+    if _yf_thread_running:
+        log.info("math bot thread already running, ignoring trigger")
+        return
+    _yf_thread_running = True
+    _yf_thread = threading.Thread(target=_yf_thread_loop, daemon=True)
+    _yf_thread.start()
+    log.info("math bot thread started")
+
+# ---------------- SELF RELIANT / TRIGGER ----------------
 if __name__ == "__main__":
-    log.info("math bot live. no ai. no bullshit.")
-    threading.Thread(target=market_loop, daemon=True).start()
+    log.info("math_bot loaded. running self-reliant mode")
+    start_math_thread()
+
+    # simple manual trigger loop
     while True:
-        time.sleep(3600)
+        cmd = input("type 'trigger' to refresh tickers manually, 'exit' to quit: ").strip().lower()
+        if cmd == "trigger":
+            summaries = get_all_summaries(TICKERS)
+            for s in summaries:
+                print(s)
+        elif cmd == "exit":
+            log.info("exiting math bot")
+            break
