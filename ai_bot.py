@@ -79,24 +79,19 @@ def start_math_thread_once(target_func):
     log.info("math thread started")
 
 
-# ---------------- FETCH MATH ----------------
+# ---------------- FETCH MATH (fixed) ----------------
 def fetch_math_summaries(timeout=20):
-    result = {}
-    def worker():
-        try:
-            result["data"] = get_all_summaries(TICKERS)
-        except Exception as e:
-            result["error"] = e
-    t = threading.Thread(target=worker)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        log.warning("math fetch timed out (twelvedata rate limit). skipping this cycle")
+    """
+    Fetch all math summaries in the current thread.
+    Will respect TwelveData rate limits without spawning extra threads.
+    """
+    try:
+        # directly call get_all_summaries; don’t spawn a new thread
+        return get_all_summaries(TICKERS)
+    except Exception as e:
+        log.warning(f"math fetch failed or timed out: {e}")
         return []
-    if "error" in result:
-        log.warning(f"math fetch failed: {result['error']}")
-        return []
-    return result.get("data", [])
+
 
 # ---------------- DEEPSEEK ----------------
 def build_prompt(summaries):
@@ -200,6 +195,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log.info(f"starting flask on {port}")
     app.run(host="0.0.0.0", port=port)
+
 
 
 
