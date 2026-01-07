@@ -3,11 +3,12 @@ import time
 import json
 import threading
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import yfinance as yf
 import alpaca_trade_api as tradeapi
 from dotenv import load_dotenv
 from flask import Flask, jsonify
+import statistics
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -36,7 +37,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
-    return {"last_run": None, "positions": {}}
+    return {"last_run": None, "positions": {}, "histories": {}}
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
@@ -87,128 +88,148 @@ def get_intraday_data(symbol, retries=3, delay=2):
     return []
 
 # ---------------- TECHNICAL CALCULATIONS ----------------
-def compute_technical(symbol):
+def ema(values, period):
+    if not values or len(values) < period:
+        return None
+    k = 2 / (period + 1)
+    ema_val = sum(values[-period:]) / period
+    for price in values[-period+1:]:
+        ema_val = price * k + ema_val * (1 - k)
+    return ema_val
+
+def macd_value(values, fast=12, slow=26):
+    efast = ema(values, fast)
+    eslow = ema(values, slow)
+    if efast is None or eslow is None:
+        return 0
+    return efast - eslow
+
+def rsi(values, period=14):
+    if len(values) <= period:
+        return 50
+    deltas = [values[i]-values[i-1] for i in range(1,len(values))]
+    gains = [d if d>0 else 0 for d in deltas]
+    losses = [-d if d<0 else 0 for d in deltas]
+    avg_gain = sum(gains[:period])/period
+    avg_loss = sum(losses[:period])/period
+    for g,l in zip(gains[period:], losses[period:]):
+        avg_gain = (avg_gain*(period-1)+g)/period
+        avg_loss = (avg_loss*(period-1)+l)/period
+    if avg_loss==0:
+        return 100
+    rs = avg_gain/avg_loss
+    return 100-(100/(1+rs))
+
+def z_clip(x, mean, std, clip=3):
+    if std==0 or std is None:
+        return 50
+    z = (x-mean)/std
+    z = max(min(z, clip), -clip)
+    return (z + clip)/(2*clip)*100
+
+def normalize_indicator(value, history):
+    if not history:
+        return 50
+    mean = statistics.mean(history)
+    stdev = statistics.pstdev(history) if len(history)>1 else 0
+    return z_clip(value, mean, stdev)
+
+def compute_technical_smart(symbol):
     data = get_intraday_data(symbol)
     if not data:
         return None
     closes = [d["close"] for d in data]
-    volumes = [d["volume"] for d in data]
+    highs = [d["high"] for d in data]
+    lows = [d["low"] for d in data]
+    vols = [d["volume"] for d in data]
 
-    now = datetime.now().time()
-    if now < datetime.strptime("10:30","%H:%M").time():
-        ma_short_len = 5
-        ma_long_len = 15
-    elif now < datetime.strptime("14:30","%H:%M").time():
-        ma_short_len = 10
-        ma_long_len = 20
-    else:
-        ma_short_len = 7
-        ma_long_len = 15
+    if len(closes) < 30:
+        return None
 
-    ma_short = sum(closes[-ma_short_len:])/ma_short_len if len(closes)>=ma_short_len else None
-    ma_long = sum(closes[-ma_long_len:])/ma_long_len if len(closes)>=ma_long_len else None
+    # MACD trend
+    macd = (macd_value(closes,8,21) + macd_value(closes,12,26))/2
 
-    # RSI calculation
-    rsi = None
-    period = 14
-    if len(closes) > period:
-        deltas = [closes[i]-closes[i-1] for i in range(1,len(closes))]
-        gains = [d if d>0 else 0 for d in deltas]
-        losses = [-d if d<0 else 0 for d in deltas]
-        avg_gain = sum(gains[:period])/period
-        avg_loss = sum(losses[:period])/period
-        for g,l in zip(gains[period:], losses[period:]):
-            avg_gain = (avg_gain*(period-1)+g)/period
-            avg_loss = (avg_loss*(period-1)+l)/period
-        rsi = 100 if avg_loss==0 else 0 if avg_gain==0 else 100-(100/(1+avg_gain/avg_loss))
+    # ATR
+    trs = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])) for i in range(1,len(data))]
+    atr = sum(trs[-14:])/min(14,len(trs)) if trs else 0
 
-    # ATR calculation
-    atr = None
-    if len(data)>1:
-        tr_list = []
-        for i in range(1,len(data)):
-            h = data[i]['high']
-            l = data[i]['low']
-            pc = data[i-1]['close']
-            tr = max(h-l, abs(h-pc), abs(l-pc))
-            tr_list.append(tr)
-        atr = sum(tr_list[-14:])/14 if len(tr_list)>=14 else tr_list[-1]
+    # RSI
+    rsi_v = rsi(closes)
 
-    last = closes[-1]
-    prev = closes[-2] if len(closes)>1 else last
-    delta = last-prev
-    vol_window = min(120, len(volumes))
-    avg_vol = sum(volumes[-vol_window:])/vol_window if vol_window>0 else 0
-    vol_change = (volumes[-1]-avg_vol)/avg_vol*100 if avg_vol!=0 else 0
+    # volume change
+    vol_recent = vols[-120:] if len(vols)>=120 else vols
+    vol_med = statistics.median(vol_recent) if vol_recent else 0
+    vol_now = vols[-1] if vols else 0
+    vol_change = (vol_now-vol_med) if vol_med!=0 else 0
+
+    # get historical values from STATE
+    histories = STATE.get("histories", {}).get(symbol, {})
+    macd_hist = histories.get("macd",[])
+    rsi_hist = histories.get("rsi",[])
+    vol_hist = histories.get("vol",[])
+    atr_hist = histories.get("atr",[])
+
+    # normalize indicators
+    macd_norm = normalize_indicator(macd, macd_hist)
+    rsi_norm = normalize_indicator(rsi_v, rsi_hist)
+    vol_norm = normalize_indicator(vol_change, vol_hist)
+    atr_norm = normalize_indicator(atr, atr_hist)
+
+    # trend strength
+    trend_strength = max(0.0,min(abs(macd)/atr if atr else 0,1.0))
+
+    # dynamic weights
+    w_trend = 0.2 + 0.4*trend_strength
+    w_rsi = 0.5 - 0.25*trend_strength
+    w_vol = 0.2 - 0.05*trend_strength
+    w_atr = 1.0 - (w_trend+w_rsi+w_vol)
+    s = w_trend+w_rsi+w_vol+w_atr
+    w_trend/=s; w_rsi/=s; w_vol/=s; w_atr/=s
+
+    # final score
+    score = macd_norm*w_trend + rsi_norm*w_rsi + vol_norm*w_vol + atr_norm*w_atr
+    score = max(0,min(100,score))
+
+    # update histories
+    for key,val,hist in zip(["macd","rsi","vol","atr"],[macd,rsi_v,vol_change,atr],[macd_hist,rsi_hist,vol_hist,atr_hist]):
+        hist.append(val)
+        if len(hist)>200: hist.pop(0)
+        if symbol not in STATE["histories"]: STATE["histories"][symbol]={}
+        STATE["histories"][symbol][key]=hist
 
     return {
-        "price": last,
-        "change": delta,
-        "ma_short": ma_short,
-        "ma_long": ma_long,
-        "rsi": rsi,
-        "volume": volumes[-1],
+        "price": closes[-1],
+        "score": score,
+        "trend_strength": trend_strength,
+        "macd": macd,
+        "rsi": rsi_v,
+        "atr": atr,
         "vol_change": vol_change,
-        "atr": atr
-    }
-
-# ---------------- MATH SCORE ----------------
-def compute_math_score(symbol):
-    tech = compute_technical(symbol)
-    if not tech:
-        return 50
-
-    ma_diff = tech['ma_short'] - tech['ma_long'] if tech['ma_short'] and tech['ma_long'] else 0
-    trending = abs(ma_diff) > 0
-
-    if trending:
-        weights = {"trend":0.45, "rsi":0.30, "vol":0.20, "atr":0.05}
-    else:
-        weights = {"trend":0.20, "rsi":0.45, "vol":0.25, "atr":0.10}
-
-    ma_score = 100 if tech['ma_short'] > tech['ma_long'] else 0
-    rsi_score = 100 - tech['rsi'] if tech['rsi'] is not None else 50
-    vol_score = min(max(tech['vol_change'],0),100)
-    atr_score = tech['atr'] if tech['atr'] else 50
-    atr_score = min(max(atr_score,0),100)
-
-    return (ma_score*weights["trend"] +
-            rsi_score*weights["rsi"] +
-            vol_score*weights["vol"] +
-            atr_score*weights["atr"])
-
-# ---------------- COMBINED ----------------
-def build_summary(symbol):
-    tech = compute_technical(symbol)
-    return {
-        "symbol": symbol,
-        "math_score": compute_math_score(symbol),
-        "price": tech['price'] if tech else None,
-        "ma_short": tech['ma_short'] if tech else None,
-        "ma_long": tech['ma_long'] if tech else None,
-        "rsi": tech['rsi'] if tech else None,
-        "atr": tech['atr'] if tech else None
+        "weights": {"trend": w_trend,"rsi":w_rsi,"vol":w_vol,"atr":w_atr}
     }
 
 # ---------------- EXECUTION ----------------
 def execute_trades(ignore_market_hours=False):
     now = datetime.now().time()
-    if not ignore_market_hours and (now < MARKET_OPEN or now > MARKET_CLOSE):
-        log.info("market closed, skipping trade execution")
+    if not ignore_market_hours and (now<MARKET_OPEN or now>MARKET_CLOSE):
+        log.info("market closed, skipping trades")
         return []
 
-    executed = []
+    executed=[]
     for symbol in TICKERS:
-        summary = build_summary(symbol)
-        score = summary["math_score"]
+        summary = compute_technical_smart(symbol)
+        if not summary:
+            continue
+        score = summary["score"]
         action = None
-        if score > 70:
-            submit_order(symbol, qty=1, side="buy")
-            action = "buy"
-        elif score < 30:
-            submit_order(symbol, qty=1, side="sell")
-            action = "sell"
-        executed.append({ "symbol": symbol, "score": score, "action": action })
+        if score>75:
+            submit_order(symbol,1,"buy")
+            action="buy"
+        elif score<25:
+            submit_order(symbol,1,"sell")
+            action="sell"
+        executed.append({"symbol":symbol,"score":score,"action":action})
+    save_state(STATE)
     return executed
 
 # ---------------- FLASK ----------------
@@ -218,33 +239,32 @@ app = Flask(__name__)
 def trigger():
     log.info("trigger requested")
     executed = execute_trades(ignore_market_hours=True)
-    return jsonify({ "executed": executed })
+    return jsonify({"executed":executed})
 
 # ---------------- MAIN LOOP ----------------
 def bot_loop():
     while True:
         now = datetime.now()
-        if now.time() < MARKET_OPEN or now.time() > MARKET_CLOSE:
+        if now.time()<MARKET_OPEN or now.time()>MARKET_CLOSE:
             log.info("market closed, sleeping")
             time.sleep(60)
             continue
 
         if STATE.get("last_run"):
-            last_run = datetime.strptime(STATE["last_run"], "%Y-%m-%d %H:%M:%S")
+            last_run = datetime.strptime(STATE["last_run"],"%Y-%m-%d %H:%M:%S")
             if last_run.hour == now.hour:
                 time.sleep(60)
                 continue
 
-        log.info("running scheduled math bot cycle")
+        log.info("running scheduled bot cycle")
         execute_trades()
-        STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        STATE["last_run"]=now.strftime("%Y-%m-%d %H:%M:%S")
         save_state(STATE)
-
-        sleep_seconds = 1800 - (now.minute % 30)*60 - now.second
+        sleep_seconds=1800-(now.minute%30)*60-now.second
         time.sleep(sleep_seconds)
 
 # ---------------- START ----------------
-if __name__ == "__main__":
-    log.info("starting math bot as webservice")
-    threading.Thread(target=bot_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+if __name__=="__main__":
+    log.info("starting smarter math bot as webservice")
+    threading.Thread(target=bot_loop,daemon=True).start()
+    app.run(host="0.0.0.0",port=int(os.getenv("PORT",10000)))
