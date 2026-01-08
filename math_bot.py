@@ -5,7 +5,6 @@ import threading
 import logging
 from datetime import datetime, time as dtime
 import statistics
-import requests
 
 import yfinance as yf
 import alpaca_trade_api as tradeapi
@@ -33,8 +32,6 @@ MARKET_CLOSE = dtime(16, 0)
 INTRADAY_TTL = 60
 STATE_FILE = "trade_state.json"
 
-ACCOUNT_EQUITY = 100000
-DAILY_MAX_LOSS_PCT = 0.03
 TARGET_AVG_TRADE = 10000
 
 # ================== LOGGING ==================
@@ -51,7 +48,6 @@ def load_state():
             return json.load(f)
     return {
         "last_run": None,
-        "daily_loss": 0.0,
         "histories": {}
     }
 
@@ -93,12 +89,7 @@ def get_intraday_data(symbol):
         return cached["bars"]
 
     try:
-        df = yf.download(
-            symbol,
-            period="1d",
-            interval="1m",
-            progress=False
-        )
+        df = yf.download(symbol, period="1d", interval="1m", progress=False)
 
         if df.empty:
             return cached["bars"] if cached else []
@@ -141,13 +132,16 @@ def macd(values):
 def rsi(values, period=14):
     if len(values) <= period:
         return 50
-    deltas = [values[i]-values[i-1] for i in range(1,len(values))]
-    gains = [d if d>0 else 0 for d in deltas]
-    losses = [-d if d<0 else 0 for d in deltas]
+    deltas = [values[i] - values[i - 1] for i in range(1, len(values))]
+    gains = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
+
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
+
     if avg_loss == 0:
         return 100
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
@@ -187,6 +181,17 @@ def analyze(symbol):
         vol_n * 0.20
     )
 
+    if score >= 85:
+        signal = "strong_buy"
+    elif score >= 70:
+        signal = "buy"
+    elif score >= 30:
+        signal = "hold"
+    elif score >= 15:
+        signal = "sell"
+    else:
+        signal = "strong_sell"
+
     hist["macd"].append(macd_v)
     hist["rsi"].append(rsi_v)
     hist["vol"].append(vol_delta)
@@ -197,12 +202,27 @@ def analyze(symbol):
 
     return {
         "price": closes[-1],
-        "score": score
+        "score": score,
+        "signal": signal,
+        "macd_n": macd_n,
+        "rsi_n": rsi_n,
+        "vol_n": vol_n
     }
 
 def position_size(price, score):
     base = TARGET_AVG_TRADE / price
-    factor = 0.5 + score / 100
+
+    if score >= 85:
+        factor = 1.5
+    elif score >= 70:
+        factor = 1.2
+    elif score >= 30:
+        factor = 1.0
+    elif score >= 15:
+        factor = 0.8
+    else:
+        factor = 0.6
+
     return max(1, int(base * factor))
 
 # ================== EXECUTION ==================
@@ -216,62 +236,41 @@ def run_cycle(ignore_market_hours=False):
     executed = []
 
     for symbol in TICKERS:
-        log.info(f"checking {symbol}")
-
         res = analyze(symbol)
         if not res:
-            log.warning(f"{symbol}: no analysis result, skipping")
+            log.warning(f"{symbol}: no data")
             continue
 
         score = res["score"]
         price = res["price"]
+        signal = res["signal"]
 
-        log.info(f"{symbol} | price={price:.2f} | score={score:.1f}")
+        log.info(
+            f"{symbol} | ${price:.2f} | score={score:.1f} | {signal.upper()} | "
+            f"macd_n={res['macd_n']:.1f} rsi_n={res['rsi_n']:.1f} vol_n={res['vol_n']:.1f}"
+        )
 
-        if score > 75:
+        if signal in ["buy", "strong_buy"]:
             qty = position_size(price, score)
-            log.info(f"🚀 BUY SIGNAL {symbol} | qty={qty} | score={score:.1f}")
             submit_order(symbol, qty, "buy")
-            executed.append({
-                "symbol": symbol,
-                "action": "buy",
-                "score": score
-            })
+            executed.append({"symbol": symbol, "action": signal, "score": score})
 
-        elif score < 25:
+        elif signal in ["sell", "strong_sell"]:
             qty = position_size(price, score)
-            log.info(f"🧨 SELL SIGNAL {symbol} | qty={qty} | score={score:.1f}")
             submit_order(symbol, qty, "sell")
-            executed.append({
-                "symbol": symbol,
-                "action": "sell",
-                "score": score
-            })
-
-        else:
-            log.info(f"{symbol}: no trade (score in dead zone)")
+            executed.append({"symbol": symbol, "action": signal, "score": score})
 
     save_state(STATE)
-    log.info(f"cycle finished | trades executed: {len(executed)}")
-
-    if executed:
-        log.info(f"executed trades: {executed}")
-    else:
-        log.info("no trades this cycle, market boring as hell")
-
+    log.info(f"cycle finished | trades: {len(executed)}")
     return executed
-
 
 # ================== FLASK ==================
 app = Flask(__name__)
 
 @app.route("/trigger", methods=["GET"])
 def trigger():
-    log.info("🔥 MANUAL TRIGGER FIRED")
     executed = run_cycle(ignore_market_hours=True)
-    log.info(f"trigger results: {executed}")
     return jsonify({"executed": executed})
-
 
 # ================== LOOP ==================
 def bot_loop():
@@ -286,7 +285,6 @@ def bot_loop():
                     time.sleep(30)
                     continue
 
-            log.info("auto cycle")
             run_cycle()
             STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
             save_state(STATE)
