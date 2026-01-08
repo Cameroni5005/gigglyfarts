@@ -41,43 +41,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("bot")
 
-log.info("script booting")
-
-def debug_yfinance_startup():
-    log.info("running yfinance startup diagnostics")
-
-    bad = []
-    good = []
-
-    for symbol in TICKERS:
-        try:
-            start = time.time()
-            df = yf.download(symbol, period="1d", interval="1m", progress=False)
-            elapsed = time.time() - start
-
-            if df.empty:
-                log.warning(f"{symbol}: EMPTY (took {elapsed:.2f}s)")
-                bad.append(symbol)
-            else:
-                log.info(f"{symbol}: OK rows={len(df)} (took {elapsed:.2f}s)")
-                good.append(symbol)
-
-        except Exception as e:
-            log.error(f"{symbol}: ERROR {e}")
-            bad.append(symbol)
-
-    log.info("======== YFINANCE SUMMARY ========")
-    log.info(f"good: {len(good)} {good}")
-    log.info(f"bad: {len(bad)} {bad}")
-    log.info("=================================")
-
-# ================== ENV CHECK ==================
-if not API_KEY or not API_SECRET or not APCA_URL:
-    log.error("MISSING ALPACA ENV VARS")
-    log.error(f"API_KEY={API_KEY}")
-    log.error(f"API_SECRET={API_SECRET}")
-    log.error(f"APCA_URL={APCA_URL}")
-
 # ================== STATE ==================
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -112,15 +75,25 @@ def submit_order(symbol, qty, side):
 
 # ================== MARKET TIME ==================
 def market_is_open():
-    try:
-        clock = api.get_clock()
-        return clock.is_open
-    except Exception:
-        log.exception("failed to get market clock")
-        return False
+    now = datetime.now().time()
+    return MARKET_OPEN <= now <= MARKET_CLOSE
 
 # ================== DATA ==================
 INTRADAY_CACHE = {}
+
+def fetch_yf(symbol, interval, period):
+    try:
+        return yf.download(
+            symbol,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+            threads=False
+        )
+    except Exception as e:
+        log.warning(f"{symbol} yf exception: {e}")
+        return None
 
 def get_intraday_data(symbol):
     now = time.time()
@@ -129,32 +102,42 @@ def get_intraday_data(symbol):
     if cached and now - cached["ts"] < INTRADAY_TTL:
         return cached["bars"]
 
-    try:
-        df = yf.download(symbol, period="1d", interval="1m", progress=False)
+    intervals = ["1m", "2m", "5m"]
 
-        if df.empty:
-            log.warning(f"{symbol}: yfinance returned empty")
-            return cached["bars"] if cached else []
+    for interval in intervals:
+        for attempt in range(3):
+            df = fetch_yf(symbol, interval, "5d")
 
-        bars = []
-        for idx, row in df.iterrows():
-            bars.append({
-                "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
-                "close": float(row["Close"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "volume": float(row["Volume"])
-            })
+            if df is None or df.empty:
+                log.warning(f"{symbol} | {interval} | empty (attempt {attempt+1})")
+                time.sleep(1)
+                continue
 
-        INTRADAY_CACHE[symbol] = {
-            "bars": bars,
-            "ts": now
-        }
-        return bars
+            bars = []
+            for idx, row in df.iterrows():
+                try:
+                    bars.append({
+                        "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
+                        "close": float(row["Close"]),
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "volume": float(row["Volume"])
+                    })
+                except:
+                    continue
 
-    except Exception:
-        log.exception(f"data fetch failed for {symbol}")
-        return cached["bars"] if cached else []
+            if len(bars) >= 30:
+                INTRADAY_CACHE[symbol] = {
+                    "bars": bars,
+                    "ts": now
+                }
+                log.info(f"{symbol} using interval {interval} with {len(bars)} bars")
+                return bars
+            else:
+                log.warning(f"{symbol} | {interval} | not enough bars: {len(bars)}")
+
+    log.error(f"{symbol} all intervals failed")
+    return cached["bars"] if cached else []
 
 # ================== INDICATORS ==================
 def ema(values, period):
@@ -200,7 +183,7 @@ def normalize(val, hist):
 def analyze(symbol):
     data = get_intraday_data(symbol)
     if len(data) < 30:
-        log.warning(f"{symbol}: not enough bars ({len(data)})")
+        log.warning(f"{symbol}: not enough data after all fallbacks")
         return None
 
     closes = [b["close"] for b in data]
@@ -311,42 +294,30 @@ app = Flask(__name__)
 
 @app.route("/trigger", methods=["GET"])
 def trigger():
-    log.info("/trigger called")
     executed = run_cycle(ignore_market_hours=True)
     return jsonify({"executed": executed})
 
 # ================== LOOP ==================
 def bot_loop():
-    log.info("bot loop started")
     while True:
-        try:
-            log.info("bot loop tick")
+        if market_is_open():
+            now = datetime.now()
+            last = STATE.get("last_run")
 
-            if market_is_open():
-                now = datetime.now()
-                last = STATE.get("last_run")
+            if last:
+                last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+                if (now - last_dt).seconds < 1800:
+                    time.sleep(30)
+                    continue
 
-                if last:
-                    last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
-                    if (now - last_dt).seconds < 1800:
-                        time.sleep(30)
-                        continue
+            run_cycle()
+            STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
+            save_state(STATE)
 
-                run_cycle()
-                STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
-                save_state(STATE)
-            else:
-                log.info("market closed")
-
-            time.sleep(30)
-
-        except Exception:
-            log.exception("bot loop crashed, restarting in 5s")
-            time.sleep(5)
+        time.sleep(30)
 
 # ================== START ==================
 if __name__ == "__main__":
     log.info("starting trading webservice")
-    debug_yfinance_startup()
     threading.Thread(target=bot_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT)
