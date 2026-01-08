@@ -41,6 +41,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("bot")
 
+log.info("script booting")
+
+# ================== ENV CHECK ==================
+if not API_KEY or not API_SECRET or not APCA_URL:
+    log.error("MISSING ALPACA ENV VARS")
+    log.error(f"API_KEY={API_KEY}")
+    log.error(f"API_SECRET={API_SECRET}")
+    log.error(f"APCA_URL={APCA_URL}")
+
 # ================== STATE ==================
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -92,6 +101,7 @@ def get_intraday_data(symbol):
         df = yf.download(symbol, period="1d", interval="1m", progress=False)
 
         if df.empty:
+            log.warning(f"{symbol}: yfinance returned empty")
             return cached["bars"] if cached else []
 
         bars = []
@@ -158,6 +168,7 @@ def normalize(val, hist):
 def analyze(symbol):
     data = get_intraday_data(symbol)
     if len(data) < 30:
+        log.warning(f"{symbol}: not enough bars ({len(data)})")
         return None
 
     closes = [b["close"] for b in data]
@@ -238,7 +249,6 @@ def run_cycle(ignore_market_hours=False):
     for symbol in TICKERS:
         res = analyze(symbol)
         if not res:
-            log.warning(f"{symbol}: no data")
             continue
 
         score = res["score"]
@@ -269,27 +279,38 @@ app = Flask(__name__)
 
 @app.route("/trigger", methods=["GET"])
 def trigger():
+    log.info("/trigger called")
     executed = run_cycle(ignore_market_hours=True)
     return jsonify({"executed": executed})
 
 # ================== LOOP ==================
 def bot_loop():
+    log.info("bot loop started")
     while True:
-        if market_is_open():
-            now = datetime.now()
-            last = STATE.get("last_run")
+        try:
+            log.info("bot loop tick")
 
-            if last:
-                last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
-                if (now - last_dt).seconds < 1800:
-                    time.sleep(30)
-                    continue
+            if market_is_open():
+                now = datetime.now()
+                last = STATE.get("last_run")
 
-            run_cycle()
-            STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
-            save_state(STATE)
+                if last:
+                    last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+                    if (now - last_dt).seconds < 1800:
+                        time.sleep(30)
+                        continue
 
-        time.sleep(30)
+                run_cycle()
+                STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                save_state(STATE)
+            else:
+                log.info("market closed")
+
+            time.sleep(30)
+
+        except Exception:
+            log.exception("bot loop crashed, restarting in 5s")
+            time.sleep(5)
 
 # ================== START ==================
 if __name__ == "__main__":
