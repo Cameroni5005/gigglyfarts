@@ -84,8 +84,12 @@ def submit_order(symbol, qty, side):
 
 # ================== MARKET TIME ==================
 def market_is_open():
-    now = datetime.now().time()
-    return MARKET_OPEN <= now <= MARKET_CLOSE
+    try:
+        clock = api.get_clock()
+        return clock.is_open
+    except Exception:
+        log.exception("failed to get market clock")
+        return False
 
 # ================== DATA ==================
 INTRADAY_CACHE = {}
