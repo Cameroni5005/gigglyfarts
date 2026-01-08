@@ -43,6 +43,34 @@ log = logging.getLogger("bot")
 
 log.info("script booting")
 
+def debug_yfinance_startup():
+    log.info("running yfinance startup diagnostics")
+
+    bad = []
+    good = []
+
+    for symbol in TICKERS:
+        try:
+            start = time.time()
+            df = yf.download(symbol, period="1d", interval="1m", progress=False)
+            elapsed = time.time() - start
+
+            if df.empty:
+                log.warning(f"{symbol}: EMPTY (took {elapsed:.2f}s)")
+                bad.append(symbol)
+            else:
+                log.info(f"{symbol}: OK rows={len(df)} (took {elapsed:.2f}s)")
+                good.append(symbol)
+
+        except Exception as e:
+            log.error(f"{symbol}: ERROR {e}")
+            bad.append(symbol)
+
+    log.info("======== YFINANCE SUMMARY ========")
+    log.info(f"good: {len(good)} {good}")
+    log.info(f"bad: {len(bad)} {bad}")
+    log.info("=================================")
+
 # ================== ENV CHECK ==================
 if not API_KEY or not API_SECRET or not APCA_URL:
     log.error("MISSING ALPACA ENV VARS")
@@ -319,5 +347,6 @@ def bot_loop():
 # ================== START ==================
 if __name__ == "__main__":
     log.info("starting trading webservice")
+    debug_yfinance_startup()
     threading.Thread(target=bot_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT)
