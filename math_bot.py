@@ -82,18 +82,23 @@ def market_is_open():
 INTRADAY_CACHE = {}
 
 def fetch_yf(symbol, interval, period):
-    try:
-        return yf.download(
-            symbol,
-            period=period,
-            interval=interval,
-            progress=False,
-            auto_adjust=False,
-            threads=False
-        )
-    except Exception as e:
-        log.warning(f"{symbol} yf exception: {e}")
-        return None
+    """fetch yfinance data with retries and fallback"""
+    for attempt in range(3):
+        try:
+            df = yf.download(
+                symbol,
+                period=period,
+                interval=interval,
+                progress=False,
+                auto_adjust=False,
+                threads=True
+            )
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            log.warning(f"{symbol} yf exception attempt {attempt+1}: {e}")
+        time.sleep(1)
+    return None
 
 def get_intraday_data(symbol):
     now = time.time()
@@ -102,39 +107,47 @@ def get_intraday_data(symbol):
     if cached and now - cached["ts"] < INTRADAY_TTL:
         return cached["bars"]
 
-    intervals = ["1m", "2m", "5m"]
+    # intervals fallback: try 1m, 2m, 5m in order
+    intervals = ["1m", "2m", "5m", "15m", "30m", "60m"]
+    periods = {
+        "1m": "7d",  # max 7 days
+        "2m": "60d",
+        "5m": "60d",
+        "15m": "60d",
+        "30m": "60d",
+        "60m": "730d"  # max 2 years
+    }
 
     for interval in intervals:
-        for attempt in range(3):
-            df = fetch_yf(symbol, interval, "5d")
+        period = periods.get(interval, "7d")
+        df = fetch_yf(symbol, interval, period)
 
-            if df is None or df.empty:
-                log.warning(f"{symbol} | {interval} | empty (attempt {attempt+1})")
-                time.sleep(1)
+        if df is None or df.empty:
+            log.warning(f"{symbol} | {interval} | empty")
+            continue
+
+        bars = []
+        for idx, row in df.iterrows():
+            try:
+                bars.append({
+                    "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
+                    "close": float(row["Close"]),
+                    "high": float(row["High"]),
+                    "low": float(row["Low"]),
+                    "volume": float(row["Volume"])
+                })
+            except Exception:
                 continue
 
-            bars = []
-            for idx, row in df.iterrows():
-                try:
-                    bars.append({
-                        "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
-                        "close": float(row["Close"]),
-                        "high": float(row["High"]),
-                        "low": float(row["Low"]),
-                        "volume": float(row["Volume"])
-                    })
-                except:
-                    continue
-
-            if len(bars) >= 30:
-                INTRADAY_CACHE[symbol] = {
-                    "bars": bars,
-                    "ts": now
-                }
-                log.info(f"{symbol} using interval {interval} with {len(bars)} bars")
-                return bars
-            else:
-                log.warning(f"{symbol} | {interval} | not enough bars: {len(bars)}")
+        if len(bars) >= 30:
+            INTRADAY_CACHE[symbol] = {
+                "bars": bars,
+                "ts": now
+            }
+            log.info(f"{symbol} using interval {interval} with {len(bars)} bars")
+            return bars
+        else:
+            log.warning(f"{symbol} | {interval} | not enough bars: {len(bars)}")
 
     log.error(f"{symbol} all intervals failed")
     return cached["bars"] if cached else []
