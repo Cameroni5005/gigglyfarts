@@ -3,13 +3,15 @@ import time
 import json
 import threading
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 import statistics
 
 import yfinance as yf
 import alpaca_trade_api as tradeapi
 from dotenv import load_dotenv
 from flask import Flask, jsonify
+import pandas as pd
+import math
 
 # ================== CONFIG ==================
 load_dotenv()
@@ -82,23 +84,42 @@ def market_is_open():
 INTRADAY_CACHE = {}
 
 def fetch_yf(symbol, interval, period):
-    """fetch yfinance data with retries and fallback"""
     for attempt in range(3):
         try:
+            log.info(f"fetching {symbol} | interval={interval} | period={period}")
             df = yf.download(
                 symbol,
                 period=period,
                 interval=interval,
                 progress=False,
                 auto_adjust=False,
-                threads=True
+                threads=False
             )
-            if df is not None and not df.empty:
-                return df
-        except Exception as e:
-            log.warning(f"{symbol} yf exception attempt {attempt+1}: {e}")
+
+            if df is None or df.empty:
+                log.warning(f"{symbol} {interval}: empty dataframe")
+                continue
+
+            df = df.sort_index()
+            df = df.dropna()
+
+            log.info(f"{symbol} {interval}: {len(df)} rows")
+            return df
+
+        except Exception:
+            log.exception(f"{symbol} yf exception on attempt {attempt+1}")
+
         time.sleep(1)
+
     return None
+
+def is_fresh(df, max_age_minutes=60 * 6):
+    try:
+        last_ts = df.index[-1].to_pydatetime()
+        age = datetime.now() - last_ts
+        return age <= timedelta(minutes=max_age_minutes)
+    except Exception:
+        return False
 
 def get_intraday_data(symbol):
     now = time.time()
@@ -107,15 +128,14 @@ def get_intraday_data(symbol):
     if cached and now - cached["ts"] < INTRADAY_TTL:
         return cached["bars"]
 
-    # intervals fallback: try 1m, 2m, 5m in order
     intervals = ["1m", "2m", "5m", "15m", "30m", "60m"]
     periods = {
-        "1m": "7d",  # max 7 days
+        "1m": "7d",
         "2m": "60d",
         "5m": "60d",
         "15m": "60d",
         "30m": "60d",
-        "60m": "730d"  # max 2 years
+        "60m": "730d"
     }
 
     for interval in intervals:
@@ -123,9 +143,47 @@ def get_intraday_data(symbol):
         df = fetch_yf(symbol, interval, period)
 
         if df is None or df.empty:
-            log.warning(f"{symbol} | {interval} | empty")
             continue
 
+        if not is_fresh(df):
+            log.warning(f"{symbol} {interval}: stale data, skipping")
+            continue
+
+        bars = []
+        for idx, row in df.iterrows():
+            try:
+                close = float(row["Close"])
+                high = float(row["High"])
+                low = float(row["Low"])
+                volume = float(row["Volume"])
+
+                if any(map(lambda x: math.isnan(x), [close, high, low, volume])):
+                    continue
+
+                bars.append({
+                    "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
+                    "close": close,
+                    "high": high,
+                    "low": low,
+                    "volume": volume
+                })
+            except Exception:
+                continue
+
+        if len(bars) >= 30:
+            INTRADAY_CACHE[symbol] = {
+                "bars": bars,
+                "ts": now
+            }
+            log.info(f"{symbol} using interval {interval} with {len(bars)} bars")
+            return bars
+        else:
+            log.warning(f"{symbol} {interval}: not enough bars ({len(bars)})")
+
+    # FINAL FALLBACK: DAILY
+    log.warning(f"{symbol}: falling back to daily data")
+    df = fetch_yf(symbol, "1d", "1y")
+    if df is not None and not df.empty:
         bars = []
         for idx, row in df.iterrows():
             try:
@@ -144,13 +202,11 @@ def get_intraday_data(symbol):
                 "bars": bars,
                 "ts": now
             }
-            log.info(f"{symbol} using interval {interval} with {len(bars)} bars")
+            log.info(f"{symbol} using DAILY fallback with {len(bars)} bars")
             return bars
-        else:
-            log.warning(f"{symbol} | {interval} | not enough bars: {len(bars)}")
 
-    log.error(f"{symbol} all intervals failed")
-    return cached["bars"] if cached else []
+    log.error(f"{symbol}: all data sources failed")
+    return []
 
 # ================== INDICATORS ==================
 def ema(values, period):
@@ -313,24 +369,30 @@ def trigger():
 # ================== LOOP ==================
 def bot_loop():
     while True:
-        if market_is_open():
-            now = datetime.now()
-            last = STATE.get("last_run")
+        try:
+            if market_is_open():
+                now = datetime.now()
+                last = STATE.get("last_run")
 
-            if last:
-                last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
-                if (now - last_dt).seconds < 1800:
-                    time.sleep(30)
-                    continue
+                if last:
+                    last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+                    if (now - last_dt).seconds < 1800:
+                        time.sleep(30)
+                        continue
 
-            run_cycle()
-            STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
-            save_state(STATE)
+                run_cycle()
+                STATE["last_run"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                save_state(STATE)
 
-        time.sleep(30)
+            time.sleep(30)
+
+        except Exception:
+            log.exception("bot loop crashed, restarting in 10s")
+            time.sleep(10)
 
 # ================== START ==================
 if __name__ == "__main__":
     log.info("starting trading webservice")
     threading.Thread(target=bot_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT)
+
