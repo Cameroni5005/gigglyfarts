@@ -3,15 +3,15 @@ import time
 import json
 import threading
 import logging
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta, timezone
 import statistics
+import math
 
 import yfinance as yf
 import alpaca_trade_api as tradeapi
 from dotenv import load_dotenv
 from flask import Flask, jsonify
 import pandas as pd
-import math
 
 # ================== CONFIG ==================
 load_dotenv()
@@ -31,9 +31,12 @@ TICKERS = [
 MARKET_OPEN = dtime(9, 30)
 MARKET_CLOSE = dtime(16, 0)
 
-INTRADAY_TTL = 60
-STATE_FILE = "trade_state.json"
+# Yahoo config (FIX #2)
+INTERVAL = "5m"
+PERIOD = "60d"
+INTRADAY_TTL = 300  # 5 minutes
 
+STATE_FILE = "trade_state.json"
 TARGET_AVG_TRADE = 10000
 
 # ================== LOGGING ==================
@@ -48,10 +51,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
-    return {
-        "last_run": None,
-        "histories": {}
-    }
+    return {"last_run": None, "histories": {}}
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
@@ -80,46 +80,44 @@ def market_is_open():
     now = datetime.now().time()
     return MARKET_OPEN <= now <= MARKET_CLOSE
 
+# ================== YAHOO RATE LIMITER (FIX #2) ==================
+YF_LOCK = threading.Lock()
+LAST_YF_CALL = 0
+YF_MIN_DELAY = 1.5  # seconds
+
+def yf_safe_download(*args, **kwargs):
+    global LAST_YF_CALL
+    with YF_LOCK:
+        now = time.time()
+        sleep_for = YF_MIN_DELAY - (now - LAST_YF_CALL)
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+        LAST_YF_CALL = time.time()
+        return yf.download(*args, **kwargs)
+
 # ================== DATA ==================
 INTRADAY_CACHE = {}
 
-def fetch_yf(symbol, interval, period):
-    for attempt in range(3):
-        try:
-            log.info(f"fetching {symbol} | interval={interval} | period={period}")
-            df = yf.download(
-                symbol,
-                period=period,
-                interval=interval,
-                progress=False,
-                auto_adjust=False,
-                threads=False
-            )
-
-            if df is None or df.empty:
-                log.warning(f"{symbol} {interval}: empty dataframe")
-                continue
-
-            df = df.sort_index()
-            df = df.dropna()
-
-            log.info(f"{symbol} {interval}: {len(df)} rows")
-            return df
-
-        except Exception:
-            log.exception(f"{symbol} yf exception on attempt {attempt+1}")
-
-        time.sleep(1)
-
-    return None
-
-def is_fresh(df, max_age_minutes=60 * 6):
+def fetch_yf(symbol):
     try:
-        last_ts = df.index[-1].to_pydatetime()
-        age = datetime.now() - last_ts
-        return age <= timedelta(minutes=max_age_minutes)
+        log.info(f"fetching {symbol} {INTERVAL}")
+        df = yf_safe_download(
+            symbol,
+            interval=INTERVAL,
+            period=PERIOD,
+            progress=False,
+            threads=False
+        )
+
+        if df is None or df.empty:
+            log.warning(f"{symbol}: Yahoo empty response")
+            return None
+
+        return df.sort_index().dropna()
+
     except Exception:
-        return False
+        log.exception(f"{symbol}: Yahoo exception")
+        return None
 
 def get_intraday_data(symbol):
     now = time.time()
@@ -128,85 +126,25 @@ def get_intraday_data(symbol):
     if cached and now - cached["ts"] < INTRADAY_TTL:
         return cached["bars"]
 
-    intervals = ["1m", "2m", "5m", "15m", "30m", "60m"]
-    periods = {
-        "1m": "7d",
-        "2m": "60d",
-        "5m": "60d",
-        "15m": "60d",
-        "30m": "60d",
-        "60m": "730d"
-    }
+    df = fetch_yf(symbol)
+    if df is None or len(df) < 30:
+        return []
 
-    for interval in intervals:
-        period = periods.get(interval, "7d")
-        df = fetch_yf(symbol, interval, period)
-
-        if df is None or df.empty:
+    bars = []
+    for idx, row in df.iterrows():
+        try:
+            bars.append({
+                "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
+                "close": float(row["Close"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "volume": float(row["Volume"])
+            })
+        except Exception:
             continue
 
-        if not is_fresh(df):
-            log.warning(f"{symbol} {interval}: stale data, skipping")
-            continue
-
-        bars = []
-        for idx, row in df.iterrows():
-            try:
-                close = float(row["Close"])
-                high = float(row["High"])
-                low = float(row["Low"])
-                volume = float(row["Volume"])
-
-                if any(map(lambda x: math.isnan(x), [close, high, low, volume])):
-                    continue
-
-                bars.append({
-                    "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
-                    "close": close,
-                    "high": high,
-                    "low": low,
-                    "volume": volume
-                })
-            except Exception:
-                continue
-
-        if len(bars) >= 30:
-            INTRADAY_CACHE[symbol] = {
-                "bars": bars,
-                "ts": now
-            }
-            log.info(f"{symbol} using interval {interval} with {len(bars)} bars")
-            return bars
-        else:
-            log.warning(f"{symbol} {interval}: not enough bars ({len(bars)})")
-
-    # FINAL FALLBACK: DAILY
-    log.warning(f"{symbol}: falling back to daily data")
-    df = fetch_yf(symbol, "1d", "1y")
-    if df is not None and not df.empty:
-        bars = []
-        for idx, row in df.iterrows():
-            try:
-                bars.append({
-                    "time": idx.strftime("%Y-%m-%d %H:%M:%S"),
-                    "close": float(row["Close"]),
-                    "high": float(row["High"]),
-                    "low": float(row["Low"]),
-                    "volume": float(row["Volume"])
-                })
-            except Exception:
-                continue
-
-        if len(bars) >= 30:
-            INTRADAY_CACHE[symbol] = {
-                "bars": bars,
-                "ts": now
-            }
-            log.info(f"{symbol} using DAILY fallback with {len(bars)} bars")
-            return bars
-
-    log.error(f"{symbol}: all data sources failed")
-    return []
+    INTRADAY_CACHE[symbol] = {"bars": bars, "ts": now}
+    return bars
 
 # ================== INDICATORS ==================
 def ema(values, period):
@@ -252,7 +190,7 @@ def normalize(val, hist):
 def analyze(symbol):
     data = get_intraday_data(symbol)
     if len(data) < 30:
-        log.warning(f"{symbol}: not enough data after all fallbacks")
+        log.warning(f"{symbol}: not enough data")
         return None
 
     closes = [b["close"] for b in data]
@@ -270,11 +208,7 @@ def analyze(symbol):
     rsi_n = normalize(rsi_v, hist["rsi"])
     vol_n = normalize(vol_delta, hist["vol"])
 
-    score = (
-        macd_n * 0.45 +
-        rsi_n * 0.35 +
-        vol_n * 0.20
-    )
+    score = macd_n * 0.45 + rsi_n * 0.35 + vol_n * 0.20
 
     if score >= 85:
         signal = "strong_buy"
@@ -306,18 +240,7 @@ def analyze(symbol):
 
 def position_size(price, score):
     base = TARGET_AVG_TRADE / price
-
-    if score >= 85:
-        factor = 1.5
-    elif score >= 70:
-        factor = 1.2
-    elif score >= 30:
-        factor = 1.0
-    elif score >= 15:
-        factor = 0.8
-    else:
-        factor = 0.6
-
+    factor = 1.5 if score >= 85 else 1.2 if score >= 70 else 1.0 if score >= 30 else 0.8 if score >= 15 else 0.6
     return max(1, int(base * factor))
 
 # ================== EXECUTION ==================
@@ -335,27 +258,16 @@ def run_cycle(ignore_market_hours=False):
         if not res:
             continue
 
-        score = res["score"]
-        price = res["price"]
-        signal = res["signal"]
-
         log.info(
-            f"{symbol} | ${price:.2f} | score={score:.1f} | {signal.upper()} | "
-            f"macd_n={res['macd_n']:.1f} rsi_n={res['rsi_n']:.1f} vol_n={res['vol_n']:.1f}"
+            f"{symbol} | ${res['price']:.2f} | score={res['score']:.1f} | {res['signal'].upper()}"
         )
 
-        if signal in ["buy", "strong_buy"]:
-            qty = position_size(price, score)
-            submit_order(symbol, qty, "buy")
-            executed.append({"symbol": symbol, "action": signal, "score": score})
-
-        elif signal in ["sell", "strong_sell"]:
-            qty = position_size(price, score)
-            submit_order(symbol, qty, "sell")
-            executed.append({"symbol": symbol, "action": signal, "score": score})
+        if res["signal"] in ["buy", "strong_buy"]:
+            submit_order(symbol, position_size(res["price"], res["score"]), "buy")
+        elif res["signal"] in ["sell", "strong_sell"]:
+            submit_order(symbol, position_size(res["price"], res["score"]), "sell")
 
     save_state(STATE)
-    log.info(f"cycle finished | trades: {len(executed)}")
     return executed
 
 # ================== FLASK ==================
@@ -363,8 +275,7 @@ app = Flask(__name__)
 
 @app.route("/trigger", methods=["GET"])
 def trigger():
-    executed = run_cycle(ignore_market_hours=True)
-    return jsonify({"executed": executed})
+    return jsonify({"executed": run_cycle(ignore_market_hours=True)})
 
 # ================== LOOP ==================
 def bot_loop():
@@ -395,4 +306,3 @@ if __name__ == "__main__":
     log.info("starting trading webservice")
     threading.Thread(target=bot_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT)
-
